@@ -1,5 +1,5 @@
 // Service worker: network-first с кэш-фолбэком (свежий код онлайн, работа офлайн).
-const CACHE = 'ptm-v8';
+const CACHE = 'ptm-v9';
 const ASSETS = [
   './',
   './index.html',

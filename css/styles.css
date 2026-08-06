@@ -327,23 +327,30 @@ input.f-low, select.f-low { border-color: var(--low); box-shadow: 0 0 0 2px rgba
 /* плашка переноса текстом — как плашка создания, но по центру сверху */
 .movesheet { top: calc(8px + env(safe-area-inset-top)); left: 50%; right: auto; transform: translateX(-50%); }
 
-/* сегменты: две плитки вплотную, активная — сплошная заливка */
-.bp-row .seg, .bp-flexrow .seg { flex: 1 1 0; display: flex; gap: var(--bp-gap);
-  background: transparent; border: none; padding: 0; border-radius: var(--bp-r); }
-.bp-row .seg button, .bp-flexrow .seg button { flex: 1 1 0; border: none; cursor: pointer;
-  background: rgba(255,255,255,.22); color: #fff; padding: 0 10px; font-size: 16px; line-height: 1; }
-.bp-row .seg button:hover, .bp-flexrow .seg button:hover { background: rgba(255,255,255,.34); }
-.bp-row .seg button.on, .bp-flexrow .seg button.on { background: #fff; color: #16181a; }
+/* слайдер: цельная дорожка, под значками скользит подсветка */
+.blockpop .seg.slider { flex: 1 1 0; position: relative; display: grid; grid-template-columns: 1fr 1fr;
+  gap: 0; padding: 0; border: none; border-radius: var(--bp-r); background: rgba(255,255,255,.22);
+  overflow: hidden; }
+.blockpop .seg.slider .seg-thumb { position: absolute; top: 0; bottom: 0; left: 0; width: 50%;
+  border-radius: var(--bp-r); background: #fff;
+  transition: transform .26s cubic-bezier(.4, 0, .2, 1); }
+.blockpop .seg.slider[data-pos="1"] .seg-thumb { transform: translateX(100%); }
+.blockpop .seg.slider button { position: relative; z-index: 1; border: none; background: transparent;
+  cursor: pointer; color: #fff; padding: 0 10px; font-size: 16px; line-height: 1;
+  transition: color .26s ease; }
+.blockpop .seg.slider[data-pos="0"] button:first-of-type,
+.blockpop .seg.slider[data-pos="1"] button:last-of-type { color: #16181a; }
 /* «без привязки ко времени» и всё, что она открывает, — нежно-голубые */
-.bp-row .seg button.soft.on, .bp-flexrow .seg.soft button.on { background: #bcdcff; color: #0b2c8a; }
+.blockpop .seg.slider.soft { background: rgba(188,220,255,.28); }
+.blockpop .seg.slider.soft .seg-thumb { background: #bcdcff; }
+.blockpop .seg.slider.soft[data-pos="0"] button:first-of-type,
+.blockpop .seg.slider.soft[data-pos="1"] button:last-of-type { color: #0b2c8a; }
 .bp-row select { flex: 1 1 0; }
 
 /* строка дел без привязки ко времени — выдвигается снизу */
 .bp-flexrow { overflow: hidden; transition: max-height .22s ease, opacity .22s ease; max-height: 60px; opacity: 1; }
 .bp-flexrow.collapsed { max-height: 0; opacity: 0; }
 .bp-flexrow.hidden { display: none; }
-.bp-flexrow .seg.soft button { background: rgba(188,220,255,.28); color: #eaf3ff; }
-.bp-flexrow .seg.soft button:hover { background: rgba(188,220,255,.45); }
 
 /* нижняя строка: действия */
 .bp-ok { flex: 3 1 0; background: #fff; border: none; color: #1b4dff;

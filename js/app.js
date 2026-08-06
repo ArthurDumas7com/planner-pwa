@@ -50,6 +50,7 @@ function arm(key) {
   state.armed = key;
   state.editSnapshot = JSON.stringify(state.items);   // для «отменить изменения» в панели
   state.centerArmed = true;      // шторка займёт место сверху — покажем дело по центру остатка
+  state.segPos = null;           // другое дело — слайдеры рисуем сразу, без перетекания
   render();
 }
 function disarm() { if (state.armed) { state.armed = null; state.editSnapshot = null; render(); } }
@@ -1433,21 +1434,25 @@ function mountPopover() {
       <button class="bp-ai" id="bp-ai" title="перенести текстом">✨</button>
     </div>
     <div class="bp-row">
-      <div class="seg mini">
-        <button class="${t.nature === NATURE.STRATEGIC ? 'on' : ''}" data-bp-nature="strategic" title="стратегическая — вклад в будущее">📈</button>
-        <button class="${t.nature === NATURE.TACTICAL ? 'on' : ''}" data-bp-nature="tactical" title="тактическая — текущие дела">⏩</button>
+      <div class="seg slider" data-seg="nature" data-pos="${t.nature === NATURE.STRATEGIC ? 0 : 1}">
+        <span class="seg-thumb"></span>
+        <button data-bp-nature="strategic" title="стратегическая — вклад в будущее">📈</button>
+        <button data-bp-nature="tactical" title="тактическая — текущие дела">⏩</button>
       </div>
-      <div class="seg mini seg-type">
-        <button class="${isFixed ? 'on' : ''}" data-bp-type="fixed" title="привязано ко времени">🔒</button>
-        <button class="${!isFixed ? 'on' : ''} soft" data-bp-type="flexible" title="без привязки ко времени — ставит алгоритм">↻</button>
+      <div class="seg slider soft" data-seg="type" data-pos="${isFixed ? 0 : 1}">
+        <span class="seg-thumb"></span>
+        <button data-bp-type="fixed" title="привязано ко времени">🔒</button>
+        <button data-bp-type="flexible" title="без привязки ко времени — ставит алгоритм">↻</button>
       </div>
       <select id="bp-cat">${CATEGORIES.map((c) => `<option value="${c}" ${t.category === c ? 'selected' : ''}>${CAT_LABELS[c]}</option>`).join('')}</select>
     </div>
     <!-- строка появляется только у дел без привязки ко времени и выдвигается снизу -->
     <div class="bp-flexrow${isFixed ? ' hidden' : ' collapsed'}">
-      <div class="seg mini soft" title="дробление задачи (минимальный фрагмент ${state.config.minChunkFloorMinutes || 45} мин)">
-        <button class="${t.splittable ? 'on' : ''}" data-bp-split="1" title="можно дробить на фрагменты по ${state.config.minChunkFloorMinutes || 45} мин">✂</button>
-        <button class="${t.splittable ? '' : 'on'}" data-bp-split="0" title="делать целиком, не дробить">🧱</button>
+      <div class="seg slider soft" data-seg="split" data-pos="${t.splittable ? 0 : 1}"
+        title="дробление задачи (минимальный фрагмент ${state.config.minChunkFloorMinutes || 45} мин)">
+        <span class="seg-thumb"></span>
+        <button data-bp-split="1" title="можно дробить на фрагменты по ${state.config.minChunkFloorMinutes || 45} мин">✂</button>
+        <button data-bp-split="0" title="делать целиком, не дробить">🧱</button>
       </div>
       <button class="bp-date-btn soft ${t.earliest ? '' : 'pale'}" id="bp-earliest-btn"
         title="${t.earliest ? `не раньше ${t.earliest}` : 'не задано: не раньше какой даты планировать'}">📅<span class="bp-badge">от</span></button>
@@ -1470,6 +1475,24 @@ function mountPopover() {
   // выдвигаем строку гибкой задачи: сначала схлопнутая, затем в полную высоту
   const flexRow = pop.querySelector('.bp-flexrow.collapsed');
   if (flexRow) { void flexRow.offsetHeight; flexRow.classList.remove('collapsed'); }
+  // панель пересобирается целиком, поэтому подсветку слайдера рисуем на прежней позиции
+  // и лишь затем сдвигаем — так фон перетекает под соседний значок, а не прыгает
+  pop.querySelectorAll('.seg[data-seg]').forEach((el) => {
+    const key = el.dataset.seg;
+    const now = el.dataset.pos;
+    const prev = state.segPos ? state.segPos[key] : null;
+    const thumb = el.querySelector('.seg-thumb');
+    // CSS-переход на только что вставленном элементе не запускается (нет предыдущего
+    // стиля), поэтому проигрываем сдвиг явно — от прежней позиции к текущей
+    if (prev != null && prev !== now && thumb && thumb.animate) {
+      thumb.animate(
+        [{ transform: `translateX(${prev === '1' ? '100%' : '0%'})` },
+          { transform: `translateX(${now === '1' ? '100%' : '0%'})` }],
+        { duration: 260, easing: 'cubic-bezier(.4, 0, .2, 1)' },
+      );
+    }
+    (state.segPos = state.segPos || {})[key] = now;
+  });
   wirePopover();
 }
 
