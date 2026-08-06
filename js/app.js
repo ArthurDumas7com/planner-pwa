@@ -51,6 +51,7 @@ function arm(key) {
   state.editSnapshot = JSON.stringify(state.items);   // для «отменить изменения» в панели
   state.centerArmed = true;      // шторка займёт место сверху — покажем дело по центру остатка
   state.segPos = null;           // другое дело — слайдеры рисуем сразу, без перетекания
+  state.popAnim = true;          // шторка раздвигается сверху, сдвигая календарь
   render();
 }
 function disarm() { if (state.armed) { state.armed = null; state.editSnapshot = null; render(); } }
@@ -475,7 +476,11 @@ function centerArmedBlock() {
   void sc.scrollHeight;                       // высоты только что изменились
   const scRect = sc.getBoundingClientRect();
   const elRect = el.getBoundingClientRect();
-  const delta = (elRect.top + elRect.height / 2) - (scRect.top + scRect.height / 2);
+  // верх календаря занимают липкие шапки дней — центрируем по тому, что под ними
+  const headH = (document.querySelector('.dayhead')?.offsetHeight || 0)
+    + (document.querySelector('.daybar')?.offsetHeight || 0);
+  const viewMid = scRect.top + headH + (scRect.height - headH) / 2;
+  const delta = (elRect.top + elRect.height / 2) - viewMid;
   const target = sc.scrollTop + delta;
   sc.scrollTop = Math.max(0, Math.min(target, sc.scrollHeight - sc.clientHeight));
   state.scrollTop = sc.scrollTop;
@@ -1472,6 +1477,24 @@ function mountPopover() {
       <button class="bp-cancel" id="bp-cancel" title="отменить изменения">✕</button>
     </div>`;
   app.insertBefore(pop, app.querySelector('.calwrap'));   // над календарём, календарь сдвигается вниз
+  // Шторка раскрывается сверху вниз (только при открытии — не на каждой пересборке).
+  // Дело центрируем после анимации: пока панель растёт, высота календаря ещё меняется.
+  if (state.popAnim) {
+    state.popAnim = false;
+    const wantCenter = state.centerArmed;
+    state.centerArmed = false;
+    pop.classList.add('opening');
+    void pop.offsetHeight;                       // фиксируем нулевую высоту как стартовую
+    pop.classList.remove('opening');
+    if (wantCenter) {
+      let done = false;
+      const finish = () => { if (done) return; done = true; if (state.armed) centerArmedBlock(); };
+      pop.addEventListener('transitionend', (e) => {
+        if (e.target === pop && e.propertyName === 'max-height') finish();
+      });
+      setTimeout(finish, 320);                   // страховка, если перехода не случилось
+    }
+  }
   // Строка гибких настроек выдвигается только когда дело ТОЛЬКО ЧТО стало «без привязки
   // ко времени». Любое другое изменение пересобирает панель — там она просто на месте.
   const flexRow = pop.querySelector('.bp-flexrow.collapsed');

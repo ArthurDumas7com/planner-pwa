@@ -47,16 +47,19 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
   font-size: 16px; line-height: 1; box-shadow: 0 6px 18px rgba(0,0,0,.20); }
 .todaybtn[hidden] { display: none; }
 
-/* шапка дня: мелкий день недели + крупное число, как в референсе */
+/* шапка дня: мелкий день недели + крупное число, как в референсе.
+   Липнет к верху календаря — какой это день, видно на любой глубине прокрутки. */
 .dayhead { height: 46px; flex: none; display: flex; flex-direction: column; justify-content: center;
   padding: 0 10px; border-bottom: 1px solid var(--line); color: var(--muted);
   font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
-  white-space: nowrap; overflow: hidden; }
+  white-space: nowrap; overflow: hidden;
+  position: sticky; top: 0; z-index: 9; background: var(--bg); }
 .dayhead b { display: block; font-size: 19px; font-weight: 500; color: #fff;
   letter-spacing: -.01em; text-transform: none; line-height: 1.15; }
 .dayhead.today { color: #fff; }
 
-.daybar { display: flex; height: 3px; flex: none; background: rgba(255,255,255,.10); }
+.daybar { display: flex; height: 3px; flex: none; background: rgba(255,255,255,.10);
+  position: sticky; top: 46px; z-index: 9; }
 .daybar.empty { opacity: .4; }
 .daybar .strategic { background: var(--strategic); }
 .daybar .tactical { background: var(--tactical); }
@@ -70,7 +73,9 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 /* шкала времени слева */
 .tscale { flex: 0 0 46px; z-index: 6; display: flex; flex-direction: column;
   border-right: 1px solid var(--line); overflow: hidden; }
-.tshead { height: 46px; border-bottom: 1px solid var(--line); flex: none; }
+/* шапка шкалы непрозрачна: метки времени проезжают под ней, а не поверх шапок дней */
+.tshead { height: 46px; border-bottom: 1px solid var(--line); flex: none;
+  position: relative; z-index: 2; background: var(--bg); }
 .tsbar { position: relative; flex: none;    /* не сжимать: иначе часы «сплющатся» и разойдутся с сеткой */
   height: calc(var(--span, 840) * var(--pxmin, .62) * 1px); will-change: transform; }
 .tsbar span { position: absolute; right: 8px; transform: translateY(-50%);
@@ -304,7 +309,13 @@ input.f-low, select.f-low { border-color: var(--low); box-shadow: 0 0 0 2px rgba
 .blockpop { --bp-gap: 3px; --bp-r: 12px;
   flex: none; background: #1b4dff; color: #fff; border-radius: 18px;
   padding: var(--bp-gap); display: flex; flex-direction: column; gap: var(--bp-gap);
-  box-shadow: 0 10px 26px rgba(0,0,0,.28); }
+  box-shadow: 0 10px 26px rgba(0,0,0,.28);
+  max-height: 480px; opacity: 1;
+  transition: max-height .24s cubic-bezier(.4, 0, .2, 1), opacity .18s ease,
+    padding .24s cubic-bezier(.4, 0, .2, 1), margin .24s cubic-bezier(.4, 0, .2, 1); }
+/* открывается раздвигаясь сверху: календарь плавно уезжает вниз */
+.blockpop.opening { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0;
+  margin-bottom: calc(var(--bp-gap) * -1); overflow: hidden; }
 .blockpop input, .blockpop select { background: #fff; color: #16181a;
   border: none; border-radius: var(--bp-r); margin: 0; padding: 11px 12px; font-size: 14px; }
 .blockpop input[type=text] { width: 100%; margin: 0; font-size: 15px; font-weight: 600; }
