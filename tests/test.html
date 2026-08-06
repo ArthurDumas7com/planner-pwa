@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Тесты ядра</title>
+  <style>
+    body { font: 14px/1.5 ui-monospace, monospace; background: #0f1115; color: #e6e6e6; padding: 16px; }
+    .pass { color: #57d977; }
+    .fail { color: #ff6b6b; font-weight: bold; }
+    #summary { font-size: 16px; margin-top: 12px; padding: 8px; border-radius: 6px; }
+    #summary.ok { background: #12331d; color: #7be89a; }
+    #summary.bad { background: #3a1414; color: #ff8f8f; }
+  </style>
+</head>
+<body>
+  <h1>Тесты ядра планировщика</h1>
+  <div id="out"></div>
+  <div id="summary"></div>
+  <script type="module">
+    import './core.test.js';
+    import { tests, run } from './assert.js';
+    const out = document.getElementById('out');
+    const res = run((line, isFail) => {
+      if (line.startsWith('ИТОГ')) return;
+      const div = document.createElement('div');
+      div.className = isFail ? 'fail' : 'pass';
+      div.textContent = line;
+      out.appendChild(div);
+    });
+    const s = document.getElementById('summary');
+    s.textContent = res.summary;
+    s.className = res.fail === 0 ? 'ok' : 'bad';
+    window.__TEST_RESULT__ = res;
+  </script>
+</body>
+</html>
