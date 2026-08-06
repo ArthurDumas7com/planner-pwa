@@ -241,7 +241,7 @@ function mkBlock(item, startDate, durationMinutes, chunkId) {
   const endMs = startDate.valueOf() + durationMinutes * 60000;
   return {
     done: item.status === STATUS.DONE,
-    past: endMs < Date.now(),          // прошедшее дело: показываем ✓ и ↷
+    past: endMs < Date.now(),          // прошедшее дело (в шторке доступны ✅ и ↷)
     itemId: item.id, chunkId: chunkId || null,
     conflictWith: item.conflict ? item.conflict.withTitle : null,
     movedCount: item.movedCount || 0,
@@ -423,12 +423,6 @@ function renderHome() {
   setupDayScroll(dayCount);
   setupPinchZoom();
   mountAddSheet();
-  app.querySelectorAll('[data-done]').forEach((b) => {
-    b.onclick = (e) => { e.stopPropagation(); markDone(b.getAttribute('data-done')); };
-  });
-  app.querySelectorAll('[data-moveitem]').forEach((b) => {
-    b.onclick = (e) => { e.stopPropagation(); movePastItem(b.getAttribute('data-moveitem')); };
-  });
   app.querySelectorAll('[data-move]').forEach((b) => {
     b.onclick = () => applySuggestion(b.getAttribute('data-move'), b.getAttribute('data-start'));
   });
@@ -447,7 +441,7 @@ function renderHome() {
     // работает обычная активация (ручки), чтобы можно было поправить время руками
     if (el.dataset.yield && el.dataset.item !== state.yieldFocus) {
       el.onclick = (e) => {
-        if (e.target.closest('[data-undo],[data-done],[data-moveitem]')) return;
+        if (e.target.closest('[data-undo]')) return;
         state.yieldFocus = el.dataset.yield;
         render();
       };
@@ -739,10 +733,8 @@ function renderDayColumn(day, now, markers = [], lo, span) {
     const yields = b.yielding ? ' yielding' : '';
     const fresh = b.itemId === state.highlightId ? ' justadded' : '';
     const unplaced = b.unplaced ? ' unplaced' : '';
-    // прошедшее и ещё не отмеченное дело: «сделано» и «перенести»
-    const pastBtns = b.past && !b.done
-      ? `<button class="bdone" data-done="${b.itemId}" title="сделано">✓</button>
-         <button class="bmove" data-moveitem="${b.itemId}" title="перенести">↷</button>` : '';
+    // «сделано» и «перенести» живут в шторке события (открывается тапом), а не на блоке
+    const pastBtns = '';
     return `<div class="block ${b.nature} ${b.type === TYPE.FIXED ? 'fixed' : 'flex'} ${b.atRisk ? 'risk' : ''} ${b.conflict ? 'conflict' : ''} ${on ? 'armed' : ''}${yields}${fresh}${unplaced}${b.done ? ' done' : ''} ${dragging && state.dragState.invalid ? 'invalid' : ''} ${dragging && state.dragState.moving ? 'dragging' : ''}"
       data-item="${b.itemId}" data-chunk="${b.chunkId || ''}" data-recurring="${b.recurring ? '1' : ''}"
       ${(b.yielding || b.unplaced) ? `data-yield="${b.itemId}"` : ''}
@@ -1405,6 +1397,9 @@ function mountPopover() {
   const pos = isDraft ? state.draft.proposed : targetFor(state.armed).get();
   const isFixed = t.type === TYPE.FIXED;
   const endMin = pos.startMin + pos.durationMinutes;
+  // дело уже идёт или прошло — прямо здесь можно отметить «сделано» или перенести
+  const started = !isDraft && t.status !== STATUS.DONE
+    && dayAt(fromDateKey(pos.dateKey), pos.startMin).valueOf() <= Date.now();
 
   const pop = document.createElement('div');
   pop.id = 'blockpop';
@@ -1422,21 +1417,36 @@ function mountPopover() {
     </div>
     <div class="bp-row">
       <div class="seg mini">
-        <button class="${t.nature === NATURE.STRATEGIC ? 'on' : ''}" data-bp-nature="strategic" title="стратегическая">◆</button>
-        <button class="${t.nature === NATURE.TACTICAL ? 'on' : ''}" data-bp-nature="tactical" title="тактическая">●</button>
+        <button class="${t.nature === NATURE.STRATEGIC ? 'on' : ''}" data-bp-nature="strategic" title="стратегическая — вклад в будущее">📈</button>
+        <button class="${t.nature === NATURE.TACTICAL ? 'on' : ''}" data-bp-nature="tactical" title="тактическая — текущие дела">⏩</button>
       </div>
       <div class="seg mini">
         <button class="${isFixed ? 'on' : ''}" data-bp-type="fixed" title="привязано ко времени">🔒</button>
         <button class="${!isFixed ? 'on' : ''}" data-bp-type="flexible" title="гибкая — ставит алгоритм">↻</button>
       </div>
+      ${isFixed ? '' : `
+      <div class="seg mini" title="дробление задачи (минимальный фрагмент ${state.config.minChunkFloorMinutes || 45} мин)">
+        <button class="${t.splittable ? 'on' : ''}" data-bp-split="1" title="можно дробить на фрагменты по ${state.config.minChunkFloorMinutes || 45} мин">✂</button>
+        <button class="${t.splittable ? '' : 'on'}" data-bp-split="0" title="делать целиком, не дробить">🧱</button>
+      </div>`}
       <select id="bp-cat">${CATEGORIES.map((c) => `<option value="${c}" ${t.category === c ? 'selected' : ''}>${CAT_LABELS[c]}</option>`).join('')}</select>
-      ${isFixed || !t.earliest ? '' : `<input type="date" id="bp-earliest" value="${t.earliest}" title="не раньше">`}
-      ${isFixed ? '' : `<input type="date" id="bp-deadline" value="${t.deadline || ''}" title="дедлайн">`}
+      ${isFixed ? '' : `
+      <button class="bp-date-btn ${t.earliest ? '' : 'pale'}" id="bp-earliest-btn"
+        title="${t.earliest ? `не раньше ${t.earliest}` : 'не задано: не раньше какой даты планировать'}">📅<span class="bp-badge">от</span></button>
+      <input type="date" id="bp-earliest" value="${t.earliest || ''}" class="bp-hidden-date">
+      <button class="bp-date-btn ${t.deadline ? '' : 'pale'}" id="bp-deadline-btn"
+        title="${t.deadline ? `дедлайн ${t.deadline}` : 'дедлайн не задан'}">📅<span class="bp-badge">до</span></button>
+      <input type="date" id="bp-deadline" value="${t.deadline || ''}" class="bp-hidden-date">`}
+      ${started ? `
+      <button class="bp-done" id="bp-done" title="сделано">✅</button>
+      <button class="bp-move" id="bp-move" title="перенести — подобрать новое место">↷</button>` : ''}
       ${!isFixed && !isDraft && (t.chunks || []).some((c) => c.locked)
     ? '<button class="bp-unpin" id="bp-unpin" title="открепить — пусть ставит алгоритм">↻</button>' : ''}
       ${isDraft ? '' : '<button class="bp-del" id="bp-del" title="удалить">🗑</button>'}
-      <button class="bp-ok" id="bp-ok" title="сохранить изменения">✓</button>
-      <button class="bp-cancel" id="bp-cancel" title="отменить изменения">✕</button>
+      <span class="bp-actions">
+        <button class="bp-ok" id="bp-ok" title="сохранить и закрыть">✓</button>
+        <button class="bp-cancel" id="bp-cancel" title="отменить изменения">✕</button>
+      </span>
     </div>`;
   app.insertBefore(pop, app.querySelector('.calwrap'));   // над календарём, календарь сдвигается вниз
   wirePopover();
@@ -1500,23 +1510,48 @@ function wirePopover() {
   // ✨ — перенос события фразой («перенеси на завтра в 15:00»)
   const aiBtn = document.getElementById('bp-ai');
   if (aiBtn) aiBtn.onclick = () => openMoveByText();
-  const dl = document.getElementById('bp-deadline');
-  if (dl) dl.onchange = (e) => {
+
+  // дробление задачи (только для гибких): целиком или фрагментами от minChunkFloorMinutes
+  document.querySelectorAll('#blockpop [data-bp-split]').forEach((b) => {
+    b.onclick = () => {
+      const next = b.getAttribute('data-bp-split') === '1';
+      if (next === !!t.splittable) return;
+      beforeChange();
+      t.splittable = next;
+      if (next) t.minChunkMinutes = Math.max(t.minChunkMinutes || 0, state.config.minChunkFloorMinutes || 45);
+      if (!isDraft) (t.chunks || []).forEach((c) => { c.locked = false; });  // пересобрать по новому правилу
+      after();
+    };
+  });
+
+  // границы окна планирования: «не раньше» и дедлайн — значки открывают выбор даты
+  const openPicker = (el) => {
+    if (!el) return;
+    if (el.showPicker) el.showPicker();
+    else { el.classList.remove('bp-hidden-date'); el.focus(); el.click(); }
+  };
+  const applyWindow = (field, value) => {
     if (!isDraft) snapshot();
-    t.deadline = e.target.value || null;
-    if (isDraft) return;
-    // условия изменились — открепляем задачу, чтобы алгоритм пересобрал план под новые дедлайны
+    t[field] = value || null;
+    if (isDraft) { mountPopover(); return; }
+    // условия изменились — открепляем, чтобы алгоритм пересобрал план под новые границы
     (t.chunks || []).forEach((c) => { c.locked = false; });
     after();
   };
+  const dl = document.getElementById('bp-deadline');
+  if (dl) dl.onchange = (e) => applyWindow('deadline', e.target.value);
   const ea = document.getElementById('bp-earliest');
-  if (ea) ea.onchange = (e) => {
-    if (!isDraft) snapshot();
-    t.earliest = e.target.value || null;
-    if (isDraft) return;
-    (t.chunks || []).forEach((c) => { c.locked = false; });   // пересобрать под новое окно
-    after();
-  };
+  if (ea) ea.onchange = (e) => applyWindow('earliest', e.target.value);
+  const eaBtn = document.getElementById('bp-earliest-btn');
+  if (eaBtn) eaBtn.onclick = () => openPicker(ea);
+  const dlBtn = document.getElementById('bp-deadline-btn');
+  if (dlBtn) dlBtn.onclick = () => openPicker(dl);
+
+  // «сделано» и «перенести» для дела, которое уже идёт или прошло
+  const doneBtn = document.getElementById('bp-done');
+  if (doneBtn) doneBtn.onclick = () => { const id = state.armed.itemId; state.armed = null; markDone(id); };
+  const moveBtn = document.getElementById('bp-move');
+  if (moveBtn) moveBtn.onclick = () => { const id = state.armed.itemId; state.armed = null; movePastItem(id); };
   const unpin = document.getElementById('bp-unpin');
   if (unpin) unpin.onclick = () => {
     snapshot();
@@ -1575,14 +1610,8 @@ function convertItemType(t, next, pos) {
   }
 }
 
-// клик вне активного блока и шторки — снять активацию
-document.addEventListener('pointerdown', (e) => {
-  if (!state.armed) return;
-  const el = e.target instanceof Element ? e.target : null;
-  // не снимаем активацию на кнопках и панелях: перерисовка съела бы их click
-  if (el && el.closest('#blockpop, .armed, button, select, input, .conflict-panel, .atrisk, .shiftbar')) return;
-  disarm();
-}, true);
+// Шторка событий закрывается ТОЛЬКО кнопками ✓ (сохранить) и ✕ (отменить):
+// случайный тап по календарю больше не сбрасывает правки.
 
 // ----- перетаскивание черновика -----
 function proposedStartDate() {
@@ -1683,9 +1712,26 @@ function saveDraft() {
 }
 
 // ---------- маршрутизация ----------
+/**
+ * После переплана чанки пересоздаются с новыми id — активная шторка иначе «теряет» дело
+ * и молча закрывается. Переносим активацию на актуальный фрагмент той же задачи.
+ */
+function resyncArmedChunk() {
+  const a = state.armed;
+  if (!a || a.kind === 'draft') return;
+  const t = state.items.find((x) => x.id === a.itemId);
+  if (!t) { state.armed = null; state.editSnapshot = null; return; }
+  if (t.type === TYPE.FIXED) { a.chunkId = null; return; }
+  const chunks = t.chunks || [];
+  if (chunks.some((c) => c.id === a.chunkId)) return;
+  if (!chunks.length) { state.armed = null; state.editSnapshot = null; return; }
+  a.chunkId = chunks[0].id;
+}
+
 function render() {
   // если наложение устранили вручную — снимаем режим выбора и пересчитываем план
   if (refreshCollision()) persistAndReschedule();
+  resyncArmedChunk();
   if (state.view === 'confirm') return renderConfirm();
   return renderHome();
 }

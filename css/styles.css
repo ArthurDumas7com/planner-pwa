@@ -333,17 +333,29 @@ input.f-low, select.f-low { border-color: var(--low); box-shadow: 0 0 0 2px rgba
 .bp-row select { flex: 1 1 110px; }
 .bp-row input[type=date] { flex: 1 1 130px; }
 
-.bp-ok { flex: 1; min-width: 54px; background: #1b4dff; border: none; color: #fff;
+/* «сохранить» и «отменить» всегда рядом и на одной строке — шторка закрывается только ими */
+.bp-actions { display: flex; gap: 6px; flex: 0 1 auto; margin-left: auto; }
+.bp-ok { flex: 0 0 auto; min-width: 76px; background: #1b4dff; border: none; color: #fff;
   padding: 9px 14px; border-radius: 9px; cursor: pointer; font-size: 15px; line-height: 1; }
 .bp-ok:hover { background: #143fd6; }
 .bp-cancel { flex: none; background: transparent; border: 1px solid rgba(27,77,255,.22); color: #6b7280;
   padding: 9px 14px; border-radius: 9px; cursor: pointer; font-size: 15px; line-height: 1; }
 .bp-cancel:hover { border-color: var(--risk); color: var(--risk); }
-.bp-del, .bp-unpin { background: transparent; border: 1px solid rgba(27,77,255,.22); color: #6b7280;
+.bp-del, .bp-unpin, .bp-done, .bp-move { background: transparent; border: 1px solid rgba(27,77,255,.22); color: #6b7280;
   padding: 7px 10px; border-radius: 9px; cursor: pointer; font-size: 14px; line-height: 1; }
+.bp-done:hover, .bp-move:hover { border-color: #1b4dff; background: rgba(27,77,255,.08); }
+
+/* границы окна планирования: значок календаря с подписью «от» / «до»; бледный — не задано */
+.bp-date-btn { display: inline-flex; align-items: center; gap: 2px; flex: none;
+  background: transparent; border: 1px solid rgba(27,77,255,.22); color: #16181a;
+  padding: 6px 8px; border-radius: 9px; cursor: pointer; font-size: 15px; line-height: 1; }
+.bp-date-btn .bp-badge { font-size: 10px; font-weight: 700; color: #1b4dff; letter-spacing: .02em; }
+.bp-date-btn:hover { background: rgba(27,77,255,.08); }
+.bp-date-btn.pale { opacity: .42; }
+.bp-date-btn.pale .bp-badge { color: #6b7280; }
 .bp-del:hover { border-color: var(--risk); color: var(--risk); }
 .bp-hint, .bp-time, .bp-lab { display: none; }
-.bp-ok { flex: 1; background: #1b4dff; border: none; color: #fff; padding: 7px; border-radius: 9px;
+.bp-ok { background: #1b4dff; border: none; color: #fff; padding: 7px; border-radius: 9px;
   cursor: pointer; font-size: 15px; line-height: 1; }
 .bp-del { background: transparent; border: 1px solid #f2b8b3; color: var(--risk);
   padding: 7px 11px; border-radius: 9px; cursor: pointer; font-size: 14px; line-height: 1; }
