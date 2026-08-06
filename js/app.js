@@ -3,6 +3,7 @@ import {
   TYPE, NATURE, STATUS, CATEGORIES, makeTask, targetDuration, newId,
 } from './core/model.js';
 import { parseTask } from './core/parser.js';
+import { WEEKDAYS, WEEKDAY_ABBR } from './core/dict.js';
 import { schedule } from './core/scheduler.js';
 import { expandOccurrences } from './core/recurrence.js';
 import { analyzeDrop, nearestFreeStart, suggestFreeSlots } from './core/conflicts.js';
@@ -1026,7 +1027,7 @@ function openMoveByText() {
   el.id = 'movesheet';
   el.className = 'addsheet movesheet collapsed';
   el.innerHTML = `
-    <textarea id="mv" rows="2" placeholder="Куда перенести? «завтра в 15:00»"></textarea>
+    <textarea id="mv" rows="2" placeholder="Куда перенести? «завтра» или «завтра в 15:00»"></textarea>
     <button id="mv-cancel" class="as-toggle" title="закрыть">+</button>
     <button id="mv-ok" class="as-ok" title="перенести">✓</button>
     <div id="mverr" class="err"></div>`;
@@ -1037,24 +1038,37 @@ function openMoveByText() {
   ta.focus();
 
   const apply = () => {
-    const res = parseTask(ta.value.trim(), new Date());
+    const now = new Date();
+    const res = parseTask(ta.value.trim(), now);
     const parsed = res.task;
     const explicitDuration = res.confidence.duration === 'ok';   // «на час» назвали явно
+    const hasTime = res.confidence.time === 'ok';                // время названо, а не подставлено
     const when = parsed.start ? new Date(parsed.start) : null;
-    if (!when) {
-      document.getElementById('mverr').textContent = 'Не понял, когда — например «завтра в 15:00»';
+    // «перенеси на завтра» — день без времени: парсер отдаёт его дедлайном
+    const dayKey = when ? toDateKey(when) : (parsed.deadline || moveDayFromWeekday(ta.value, now));
+    if (!dayKey) {
+      document.getElementById('mverr').textContent = 'Не понял, когда — например «завтра» или «завтра в 15:00»';
       return;
     }
     const tgt = targetFor(state.armed);
     const p = tgt.get();
+    const durationMinutes = explicitDuration && parsed.durationMinutes
+      ? parsed.durationMinutes : p.durationMinutes;
+
+    // Время не названо — сами ищем свободное окно в этом дне.
+    let startMin = hasTime && when ? minutesOfDay(when) : null;
+    if (startMin == null) {
+      const slot = freeSlotInDay(dayKey, durationMinutes, tgt.excludeId, now);
+      if (slot == null) {
+        document.getElementById('mverr').textContent = `В этот день нет свободного окна на ${durationMinutes} мин`;
+        return;
+      }
+      startMin = slot;
+    }
+
     snapshot();
     markMoved(armedTask());
-    tgt.set({
-      dateKey: toDateKey(when),
-      startMin: minutesOfDay(when),
-      // длительность меняем, только если её явно назвали
-      durationMinutes: explicitDuration && parsed.durationMinutes ? parsed.durationMinutes : p.durationMinutes,
-    });
+    tgt.set({ dateKey: dayKey, startMin, durationMinutes });
     closeMoveSheet();
     persistAndReschedule();
     render();
@@ -1065,6 +1079,37 @@ function openMoveByText() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); apply(); }
     if (e.key === 'Escape') closeMoveSheet();
   };
+}
+
+/** «в пятницу» без времени — ближайшая такая дата (сегодня не считаем). */
+function moveDayFromWeekday(text, now) {
+  const s = ` ${text.toLowerCase()} `;
+  let wd = null;
+  for (const [stem, idx] of Object.entries(WEEKDAYS)) {
+    if (s.includes(stem)) { wd = idx; break; }
+  }
+  if (wd == null) {
+    const m = s.match(/(?:^|[\s,;.])(вс|пн|вт|ср|чт|пт|сб)(?=[\s,;.]|$)/);
+    if (m) wd = WEEKDAY_ABBR[m[1]];
+  }
+  if (wd == null) return null;
+  const d = startOfDay(now);
+  const delta = ((wd - d.getDay()) + 7) % 7 || 7;   // ближайший будущий такой день
+  return toDateKey(addDays(d, delta));
+}
+
+/**
+ * Свободное окно нужной длины внутри одного дня (для «перенеси на завтра» без времени).
+ * @returns {number|null} минута начала внутри дня
+ */
+function freeSlotInDay(dayKey, durationMinutes, excludeId, now) {
+  const day = fromDateKey(dayKey);
+  let from = dayAt(day, parseHM(state.config.workStart));
+  if (from < now) from = new Date(Math.ceil(now.valueOf() / 300000) * 300000);  // сегодня — не в прошлое
+  const to = dayAt(day, parseHM(state.config.workEnd));
+  if (from >= to) return null;
+  const [slot] = suggestFreeSlots(durationMinutes, state.items, state.config, from, to, 1, excludeId);
+  return slot ? minutesOfDay(new Date(slot.start)) : null;
 }
 
 function closeMoveSheet() {
