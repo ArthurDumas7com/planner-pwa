@@ -12,19 +12,26 @@ export function deadlineCutoff(task, config) {
   return dayAt(fromDateKey(task.deadline), parseHM(config.workEnd));
 }
 
+/** Момент, раньше которого задачу ставить нельзя («с 10 по 12 авг»). null — ограничения нет. */
+export function earliestFloor(task, config) {
+  if (!task.earliest) return null;
+  return dayAt(fromDateKey(task.earliest), parseHM(config.workStart));
+}
+
 /** Сколько минут уже размещено (по чанкам). */
 export function placedMinutes(task) {
   return (task.chunks || []).reduce((s, c) => s + c.durationMinutes, 0);
 }
 
-/** Сумма свободных минут до момента cutoff (Date|null -> все). */
-export function freeMinutesBefore(freeSlots, cutoff) {
+/** Сумма свободных минут в окне [floor, cutoff) (оба Date|null -> без границы). */
+export function freeMinutesBefore(freeSlots, cutoff, floor = null) {
   let sum = 0;
   for (const s of freeSlots) {
-    if (!cutoff) { sum += s.minutes; continue; }
-    if (s.start >= cutoff) continue;
-    const end = s.end <= cutoff ? s.end : cutoff;
-    sum += (end.valueOf() - s.start.valueOf()) / 60000;
+    if (cutoff && s.start >= cutoff) continue;
+    if (floor && s.end <= floor) continue;
+    const start = floor && s.start < floor ? floor : s.start;
+    const end = cutoff && s.end > cutoff ? cutoff : s.end;
+    if (end > start) sum += (end.valueOf() - start.valueOf()) / 60000;
   }
   return sum;
 }
@@ -34,7 +41,7 @@ export function urgency(task, freeSlots, config) {
   if (!task.deadline) return 1;
   const remaining = Math.max(0, targetDuration(task) - placedMinutes(task));
   const cutoff = deadlineCutoff(task, config);
-  const freeBefore = freeMinutesBefore(freeSlots, cutoff);
+  const freeBefore = freeMinutesBefore(freeSlots, cutoff, earliestFloor(task, config));
   const slackMinutes = freeBefore - remaining;
   const slackDays = slackMinutes / workingMinutesPerDay(config);
   return 1 + 1 / Math.max(slackDays, 0.5);

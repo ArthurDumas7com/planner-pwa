@@ -303,6 +303,44 @@ test('parser: «с 4 по 6 авг» -> многодневный период', 
   eq(task.recurrence.until, '2026-08-06');
 });
 
+test('parser: «с 10 по 12 авг нужно сделать» -> окно, а не занятые дни', () => {
+  const { task } = parseTask('с 10 по 12 авг нужно сделать отчёт 2 часа', NOW);
+  eq(task.type, TYPE.FLEXIBLE);
+  eq(task.earliest, '2026-08-10');
+  eq(task.deadline, '2026-08-12');
+  eq(task.allDay, false);
+  eq(task.durationMaxMinutes, 120);
+  assert(!task.recurrence, 'окно не повторяется');
+});
+
+test('parser: окно без длительности -> дефолт, не весь день', () => {
+  const { task } = parseTask('с 10 по 12 авг надо подготовить презентацию', NOW);
+  eq(task.type, TYPE.FLEXIBLE);
+  eq(task.earliest, '2026-08-10');
+  eq(task.deadline, '2026-08-12');
+  assert(task.durationMaxMinutes > 0 && task.durationMaxMinutes <= 120, `дефолт, got ${task.durationMaxMinutes}`);
+});
+
+test('scheduler: окно — задача не встаёт раньше даты начала', () => {
+  const items = [makeTask({
+    title: 'Отчёт', nature: 'tactical', importance: 4,
+    earliest: '2026-08-10', deadline: '2026-08-12',
+    durationMinMinutes: 120, durationMaxMinutes: 120,
+  })];
+  schedule(items, DEFAULT_CONFIG, NOW);
+  const c = items[0].chunks[0];
+  assert(c, 'задача размещена');
+  assert(toDateKey(new Date(c.start)) >= '2026-08-10', `не раньше 10-го, got ${new Date(c.start).toISOString()}`);
+  assert(toDateKey(new Date(c.start)) <= '2026-08-12', `не позже 12-го, got ${new Date(c.start).toISOString()}`);
+});
+
+test('parser: «с 4 по 6 авг отпуск» остаётся занятым периодом', () => {
+  const { task } = parseTask('с 4 по 6 авг отпуск', NOW);
+  eq(task.type, TYPE.FIXED);
+  eq(task.earliest, null);
+  eq(task.allDay, true);
+});
+
 test('parser: «следующие два дня в 7 утра 20 мин» -> 2 дня подряд', () => {
   const { task } = parseTask('следующие два дня в 7 утра у меня 20 мин пробежка', NOW);
   eq(task.type, TYPE.FIXED);

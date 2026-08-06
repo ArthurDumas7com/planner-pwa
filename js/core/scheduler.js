@@ -4,7 +4,7 @@ import {
 } from './model.js';
 import { computeFreeSlots } from './freeSlots.js';
 import {
-  priorityScore, deadlineCutoff, placedMinutes,
+  priorityScore, deadlineCutoff, earliestFloor, placedMinutes,
 } from './scoring.js';
 import { startOfDay, addDays, fromDateKey, parseHM, dayAt } from './time.js';
 import { detectFixedConflicts } from './conflicts.js';
@@ -94,14 +94,16 @@ function tieBreak(a, b) {
 }
 
 /** Обрезать слоты до момента cutoff (Date|null). */
-function clipSlots(freeSlots, cutoff) {
-  if (!cutoff) return freeSlots;
+function clipSlots(freeSlots, cutoff, floor = null) {
+  if (!cutoff && !floor) return freeSlots;
   const out = [];
   for (const s of freeSlots) {
-    if (s.start >= cutoff) continue;
-    const end = s.end <= cutoff ? s.end : cutoff;
-    const minutes = (end.valueOf() - s.start.valueOf()) / 60000;
-    if (minutes > 0) out.push({ start: s.start, end, minutes });
+    if (cutoff && s.start >= cutoff) continue;
+    if (floor && s.end <= floor) continue;
+    const start = floor && s.start < floor ? floor : s.start;
+    const end = cutoff && s.end > cutoff ? cutoff : s.end;
+    const minutes = (end.valueOf() - start.valueOf()) / 60000;
+    if (minutes > 0) out.push({ start, end, minutes });
   }
   return out;
 }
@@ -134,7 +136,7 @@ function placeTask(task, freeSlots, config) {
   if (toBookMax <= 0) return;
 
   const cutoff = deadlineCutoff(task, config);
-  const usable = clipSlots(freeSlots, cutoff);
+  const usable = clipSlots(freeSlots, cutoff, earliestFloor(task, config));
   const availBefore = usable.reduce((s, x) => s + x.minutes, 0);
 
   // Анти-фрагментация (D.7): короткие задачи не дробим вообще; длинные — только вынужденно,

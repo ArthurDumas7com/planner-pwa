@@ -33,7 +33,7 @@ const state = {
   redoStack: [],    // и для повтора отменённого
 };
 
-const DRAG_TOLERANCE = 8;
+const DRAG_TOLERANCE = 5;
 const HIGHLIGHT_MS = 10000;   // сколько подсвечивать только что созданное дело
 const DAYS_BACK = 7;          // сколько дней доступно прокруткой назад
 const DAYS_FWD = 21;          // и вперёд
@@ -107,6 +107,33 @@ function collidingItems(item) {
     if (spans.some(([a, b]) => s < b && e > a)) hit.push(other);
   }
   return hit;
+}
+
+/**
+ * Из тех, на кого налезло новое событие, оставить только по-настоящему проблемных.
+ * Гибкую задачу спрашивать не о чем: алгоритм сам подвинет её (при необходимости — дробя),
+ * если она укладывается в свой дедлайн. Проблема только если это дело «ко времени»
+ * или если после переноса задача осталась без места (atRisk).
+ * @returns {{blocking: Array, movable: Array}}
+ */
+function splitVictims(victims) {
+  const blocking = victims.filter((v) => v.type === TYPE.FIXED);
+  const flex = victims.filter((v) => v.type !== TYPE.FIXED);
+  if (!flex.length) return { blocking, movable: [] };
+
+  // пробный переплан на копии: пострадавших открепляем — иначе locked-чанки не сдвинутся
+  const copy = JSON.parse(JSON.stringify(state.items));
+  const ids = new Set(flex.map((v) => v.id));
+  copy.forEach((x) => { if (ids.has(x.id)) (x.chunks || []).forEach((c) => { c.locked = false; }); });
+  schedule(copy, state.config, new Date());
+
+  const movable = [];
+  for (const v of flex) {
+    const after = copy.find((x) => x.id === v.id);
+    if (after && !after.atRisk && (after.chunks || []).length) movable.push(v);
+    else blocking.push(v);
+  }
+  return { blocking, movable };
 }
 
 /** Снимок плана перед изменением — для кнопок «Отменить» / «Вперёд». */
@@ -428,6 +455,10 @@ function renderHome() {
     attachArm(el, { kind: 'item', itemId: el.dataset.item, chunkId: el.dataset.chunk || null });
   });
   mountPopover();
+  // у низких блоков ручки делаем тоньше, иначе они закроют середину и её нечем будет тянуть
+  app.querySelectorAll('.block.armed').forEach((el) => {
+    el.classList.toggle('tiny', el.offsetHeight < 56);
+  });
   // панели меняют высоту календаря — прокрутку возвращаем последней
   const scEl = document.getElementById('daysScroll');
   if (scEl && keepScroll) {
@@ -500,6 +531,9 @@ function targetFor(key) {
 
 function startDragGeneric(e, mode, key) {
   e.preventDefault();
+  // захватываем указатель: палец может уйти за пределы блока — события всё равно придут нам,
+  // а браузер не перехватит жест под прокрутку календаря
+  try { e.target.setPointerCapture?.(e.pointerId); } catch { /* не критично */ }
   const tgt = targetFor(key);
   const wStart = parseHM(state.config.workStart);
   const wEnd = parseHM(state.config.workEnd);
@@ -541,6 +575,8 @@ function startDragGeneric(e, mode, key) {
   const up = () => {
     document.removeEventListener('pointermove', move);
     document.removeEventListener('pointerup', up);
+    document.removeEventListener('pointercancel', up);
+    try { e.target.releasePointerCapture?.(e.pointerId); } catch { /* уже отпущен */ }
     if (!moved) { state.dragState = null; return; }
     // Уронили на занятое — НЕ переносим молча. Оставляем там, где отпустили: дальше включается
     // обычный разбор наложения (⚠ на блоке, 3 свободных окна, пометка ↦ у мешающих дел).
@@ -1066,15 +1102,19 @@ function createFromText(text) {
   }
   snapshot();
   state.items.push(t);
-  // Если новое событие «ко времени» накрывает уже размещённые дела — НЕ пересчитываем план:
-  // показываем наложение как есть и ждём решения пользователя (кого и куда двигать).
+  // Новое событие «ко времени» накрыло чужие дела: подвижные разъедутся сами (молча),
+  // и только если кого-то переставить некуда — показываем наложение и спрашиваем.
   const victims = t.type === TYPE.FIXED ? collidingItems(t) : [];
-  if (victims.length) {
-    state.pendingCollision = { culpritId: t.id, victimIds: victims.map((v) => v.id) };
+  const { blocking, movable } = victims.length ? splitVictims(victims) : { blocking: [], movable: [] };
+  if (blocking.length) {
+    state.pendingCollision = { culpritId: t.id, victimIds: blocking.map((v) => v.id) };
     state.yieldFocus = t.id;
     saveItems(state.items);
   } else {
     state.pendingCollision = null;
+    // открепляем подвинутых: закреплённые чанки переплан не трогает
+    const ids = new Set(movable.map((v) => v.id));
+    state.items.forEach((x) => { if (ids.has(x.id)) (x.chunks || []).forEach((c) => { c.locked = false; }); });
     persistAndReschedule();
   }
   closeAdd();
@@ -1345,6 +1385,7 @@ function mountPopover() {
         <button class="${!isFixed ? 'on' : ''}" data-bp-type="flexible" title="гибкая — ставит алгоритм">↻</button>
       </div>
       <select id="bp-cat">${CATEGORIES.map((c) => `<option value="${c}" ${t.category === c ? 'selected' : ''}>${CAT_LABELS[c]}</option>`).join('')}</select>
+      ${isFixed || !t.earliest ? '' : `<input type="date" id="bp-earliest" value="${t.earliest}" title="не раньше">`}
       ${isFixed ? '' : `<input type="date" id="bp-deadline" value="${t.deadline || ''}" title="дедлайн">`}
       ${!isFixed && !isDraft && (t.chunks || []).some((c) => c.locked)
     ? '<button class="bp-unpin" id="bp-unpin" title="открепить — пусть ставит алгоритм">↻</button>' : ''}
@@ -1421,6 +1462,14 @@ function wirePopover() {
     if (isDraft) return;
     // условия изменились — открепляем задачу, чтобы алгоритм пересобрал план под новые дедлайны
     (t.chunks || []).forEach((c) => { c.locked = false; });
+    after();
+  };
+  const ea = document.getElementById('bp-earliest');
+  if (ea) ea.onchange = (e) => {
+    if (!isDraft) snapshot();
+    t.earliest = e.target.value || null;
+    if (isDraft) return;
+    (t.chunks || []).forEach((c) => { c.locked = false; });   // пересобрать под новое окно
     after();
   };
   const unpin = document.getElementById('bp-unpin');

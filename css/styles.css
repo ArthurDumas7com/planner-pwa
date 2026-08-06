@@ -269,12 +269,17 @@ input.f-low, select.f-low { border-color: var(--low); box-shadow: 0 0 0 2px rgba
 .pvblock.draft { z-index: 5; cursor: grab; box-shadow: 0 4px 14px rgba(22,24,26,.18); }
 .pvblock.draft.dragging { opacity: .55; cursor: grabbing; }
 .pvblock.draft.invalid { background: rgba(255,93,93,.32) !important; border-color: var(--risk) !important; }
-.pv-handle { position: absolute; left: 0; right: 0; height: 10px; cursor: ns-resize; z-index: 2; }
-.pv-handle.top { top: -1px; }
-.pv-handle.bottom { bottom: -1px; }
-.pv-handle::after { content: ""; position: absolute; left: 50%; transform: translateX(-50%); width: 20px; height: 3px;
-  border-radius: 3px; background: currentColor; opacity: .55; top: 2px; }
-.pv-handle.bottom::after { top: auto; bottom: 2px; }
+/* ручки изменения времени: крупная зона под палец, жест не уходит в прокрутку */
+.pv-handle { position: absolute; left: 0; right: 0; height: 24px; cursor: ns-resize; z-index: 3;
+  touch-action: none; display: flex; align-items: center; justify-content: center; }
+.pv-handle.top { top: -8px; }
+.pv-handle.bottom { bottom: -8px; }
+.pv-handle::after { content: ""; width: 34px; height: 5px; border-radius: 3px;
+  background: #fff; opacity: .95; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
+/* короткое дело: ручки тоньше, чтобы осталось место схватить середину */
+.block.tiny .pv-handle { height: 16px; }
+.block.tiny .pv-handle.top { top: -8px; }
+.block.tiny .pv-handle.bottom { bottom: -8px; }
 .pvb-label { display: block; white-space: normal; overflow: hidden; pointer-events: none; line-height: 1.15; word-break: break-word; }
 
 /* всплывающий тег категории сбоку от блока */
@@ -284,7 +289,9 @@ input.f-low, select.f-low { border-color: var(--low); box-shadow: 0 0 0 2px rgba
 .pv-cattag.flip { left: auto; right: calc(100% + 6px); }
 
 /* активированный блок (ручки появляются только тут) */
-.pvblock.armed, .block.armed { outline: 2px solid #fff; outline-offset: 1px; z-index: 7; }
+/* активный блок: жест целиком наш — палец двигает событие, а не прокручивает календарь */
+.pvblock.armed, .block.armed { outline: 2px solid #fff; outline-offset: 1px; z-index: 7;
+  touch-action: none; overflow: visible; }
 .block.armed { cursor: grab; }
 .pvblock.armed, .block.armed { outline-color: #fff; }
 .block.dragging { opacity: .55; }

@@ -5,7 +5,7 @@ import {
   COMMAND_WORDS, DAYPARTS, DURATION_UNITS, RU_NUMERALS, DEFAULT_DURATIONS, DEFAULT_DURATION_MINUTES,
   RELATIVE_START, RELATIVE_START_WORDS, RECURRENCE_RULES,
   IMPORTANCE_WORDS, NATURE_WORDS, CATEGORY_WORDS, REL_DATES, WEEKDAYS, WEEKDAY_ABBR, MONTHS,
-  TITLE_STOPWORDS, IMPORTANCE_STRIP, SPLIT_NO, SPLIT_YES,
+  TITLE_STOPWORDS, IMPORTANCE_STRIP, SPLIT_NO, SPLIT_YES, WINDOW_TASK_MARKERS,
 } from './dict.js';
 import { toDateKey, fromDateKey } from './time.js';
 
@@ -59,6 +59,9 @@ export function parseTask(text, now = new Date()) {
     fields.dateRange = dr;
     conf.dateRange = 'ok';
     residual = blank(residual, dr.index, dr.length);
+    // «с 10 по 12 авг нужно сделать отчёт» — это не занятые дни целиком, а окно,
+    // внутри которого алгоритм сам выберет время: не раньше «от», не позже «до».
+    fields.dateWindow = WINDOW_TASK_MARKERS.test(text.toLowerCase());
   }
 
   // 2.5. Диапазон времени «с 10 до 17» -> начало + длительность (fixed-событие)
@@ -81,8 +84,10 @@ export function parseTask(text, now = new Date()) {
 
   // 2.6. Длительность не указана — ставим дефолт (1,5 часа; по типу дела может отличаться).
   //      Помечаем 'low' (жёлтое): подставлено по умолчанию, легко поменять.
-  //      Многодневный период — исключение: он занимает дни целиком, дефолт тут не нужен.
-  if (fields.durationMax == null && !fields.dateRange && !(fields.eventDate && !fields.time)) {
+  //      Многодневный период — исключение: он занимает дни целиком, дефолт тут не нужен
+  //      (но окну «с 10 по 12 нужно…» длительность как раз нужна — его планирует алгоритм).
+  if (fields.durationMax == null && !(fields.dateRange && !fields.dateWindow)
+      && !(fields.eventDate && !fields.time)) {
     const norm0 = ` ${text.toLowerCase()} `;
     const byType = DEFAULT_DURATIONS.find((d) => d.re.test(norm0));
     const mins = byType ? byType.minutes : DEFAULT_DURATION_MINUTES;
@@ -132,7 +137,9 @@ export function parseTask(text, now = new Date()) {
 }
 
 function assemble(f, conf, now) {
-  const isFixed = !!f.time || !!f.dateRange || !!f.eventDate;
+  // окно «с 10 по 12 нужно…» ко времени не привязано: место внутри окна выбирает алгоритм
+  const isWindow = !!f.dateRange && !!f.dateWindow && !f.time;
+  const isFixed = !isWindow && (!!f.time || !!f.dateRange || !!f.eventDate);
   const blocking = [];
 
   const base = {
@@ -150,7 +157,17 @@ function assemble(f, conf, now) {
   conf.nature = f.nature.conf;
   conf.category = f.category.conf;
 
-  if (f.dateRange) {
+  if (isWindow) {
+    // окно планирования: не раньше «от», не позже «до»
+    base.earliest = f.dateRange.from;
+    base.deadline = f.dateRange.to;
+    base.importance = f.importance.value;
+    conf.importance = f.importance.conf;
+    base.durationMinMinutes = f.durationMin;
+    base.durationMaxMinutes = f.durationMax;
+    conf.earliest = 'ok';
+    conf.deadline = 'ok';
+  } else if (f.dateRange) {
     // период: со временем («следующие 2 дня в 7 утра») — дело каждый день в это время;
     // без времени («с 4 по 6 авг отпуск») — каждый день занят целиком.
     const start = fromDateKey(f.dateRange.from);

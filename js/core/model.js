@@ -60,6 +60,7 @@ export function makeTask(p = {}) {
     durationMinMinutes: p.durationMinMinutes ?? null,
     durationMaxMinutes: p.durationMaxMinutes ?? null,
     importance: p.importance ?? null,       // 1..5
+    earliest: p.earliest || null,           // 'YYYY-MM-DD' — не раньше этой даты («с 10 по 12 авг»)
     deadline: p.deadline || null,           // 'YYYY-MM-DD'
     splittable: p.splittable ?? true,
     minChunkMinutes: p.minChunkMinutes ?? 30,
