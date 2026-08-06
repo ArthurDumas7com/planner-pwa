@@ -49,6 +49,7 @@ function isArmed(key) { return sameArm(state.armed, key); }
 function arm(key) {
   state.armed = key;
   state.editSnapshot = JSON.stringify(state.items);   // для «отменить изменения» в панели
+  state.centerArmed = true;      // шторка займёт место сверху — покажем дело по центру остатка
   render();
 }
 function disarm() { if (state.armed) { state.armed = null; state.editSnapshot = null; render(); } }
@@ -462,6 +463,22 @@ function renderHome() {
     state.scrollTop = scEl.scrollTop;
     scEl.dispatchEvent(new Event('scroll'));
   }
+  if (state.centerArmed) { state.centerArmed = false; centerArmedBlock(); }
+}
+
+/** Показать активное дело по центру той части календаря, что осталась под шторкой. */
+function centerArmedBlock() {
+  const sc = document.getElementById('daysScroll');
+  const el = armedEl();
+  if (!sc || !el) return;
+  void sc.scrollHeight;                       // высоты только что изменились
+  const scRect = sc.getBoundingClientRect();
+  const elRect = el.getBoundingClientRect();
+  const delta = (elRect.top + elRect.height / 2) - (scRect.top + scRect.height / 2);
+  const target = sc.scrollTop + delta;
+  sc.scrollTop = Math.max(0, Math.min(target, sc.scrollHeight - sc.clientHeight));
+  state.scrollTop = sc.scrollTop;
+  sc.dispatchEvent(new Event('scroll'));      // шкала времени едет следом
 }
 
 // ---------- активация блока: клик (мышь) / долгое нажатие (сенсор) ----------
@@ -1420,35 +1437,39 @@ function mountPopover() {
         <button class="${t.nature === NATURE.STRATEGIC ? 'on' : ''}" data-bp-nature="strategic" title="стратегическая — вклад в будущее">📈</button>
         <button class="${t.nature === NATURE.TACTICAL ? 'on' : ''}" data-bp-nature="tactical" title="тактическая — текущие дела">⏩</button>
       </div>
-      <div class="seg mini">
+      <div class="seg mini seg-type">
         <button class="${isFixed ? 'on' : ''}" data-bp-type="fixed" title="привязано ко времени">🔒</button>
-        <button class="${!isFixed ? 'on' : ''}" data-bp-type="flexible" title="гибкая — ставит алгоритм">↻</button>
+        <button class="${!isFixed ? 'on' : ''} soft" data-bp-type="flexible" title="без привязки ко времени — ставит алгоритм">↻</button>
       </div>
-      ${isFixed ? '' : `
-      <div class="seg mini" title="дробление задачи (минимальный фрагмент ${state.config.minChunkFloorMinutes || 45} мин)">
+      <select id="bp-cat">${CATEGORIES.map((c) => `<option value="${c}" ${t.category === c ? 'selected' : ''}>${CAT_LABELS[c]}</option>`).join('')}</select>
+    </div>
+    <!-- строка появляется только у дел без привязки ко времени и выдвигается снизу -->
+    <div class="bp-flexrow${isFixed ? ' hidden' : ' collapsed'}">
+      <div class="seg mini soft" title="дробление задачи (минимальный фрагмент ${state.config.minChunkFloorMinutes || 45} мин)">
         <button class="${t.splittable ? 'on' : ''}" data-bp-split="1" title="можно дробить на фрагменты по ${state.config.minChunkFloorMinutes || 45} мин">✂</button>
         <button class="${t.splittable ? '' : 'on'}" data-bp-split="0" title="делать целиком, не дробить">🧱</button>
-      </div>`}
-      <select id="bp-cat">${CATEGORIES.map((c) => `<option value="${c}" ${t.category === c ? 'selected' : ''}>${CAT_LABELS[c]}</option>`).join('')}</select>
-      ${isFixed ? '' : `
-      <button class="bp-date-btn ${t.earliest ? '' : 'pale'}" id="bp-earliest-btn"
+      </div>
+      <button class="bp-date-btn soft ${t.earliest ? '' : 'pale'}" id="bp-earliest-btn"
         title="${t.earliest ? `не раньше ${t.earliest}` : 'не задано: не раньше какой даты планировать'}">📅<span class="bp-badge">от</span></button>
       <input type="date" id="bp-earliest" value="${t.earliest || ''}" class="bp-hidden-date">
-      <button class="bp-date-btn ${t.deadline ? '' : 'pale'}" id="bp-deadline-btn"
+      <button class="bp-date-btn soft ${t.deadline ? '' : 'pale'}" id="bp-deadline-btn"
         title="${t.deadline ? `дедлайн ${t.deadline}` : 'дедлайн не задан'}">📅<span class="bp-badge">до</span></button>
-      <input type="date" id="bp-deadline" value="${t.deadline || ''}" class="bp-hidden-date">`}
+      <input type="date" id="bp-deadline" value="${t.deadline || ''}" class="bp-hidden-date">
+      ${!isDraft && (t.chunks || []).some((c) => c.locked)
+    ? '<button class="bp-unpin soft" id="bp-unpin" title="открепить — пусть ставит алгоритм">↻</button>' : ''}
+    </div>
+    <div class="bp-row bp-bottom">
       ${started ? `
       <button class="bp-done" id="bp-done" title="сделано">✅</button>
       <button class="bp-move" id="bp-move" title="перенести — подобрать новое место">↷</button>` : ''}
-      ${!isFixed && !isDraft && (t.chunks || []).some((c) => c.locked)
-    ? '<button class="bp-unpin" id="bp-unpin" title="открепить — пусть ставит алгоритм">↻</button>' : ''}
       ${isDraft ? '' : '<button class="bp-del" id="bp-del" title="удалить">🗑</button>'}
-      <span class="bp-actions">
-        <button class="bp-ok" id="bp-ok" title="сохранить и закрыть">✓</button>
-        <button class="bp-cancel" id="bp-cancel" title="отменить изменения">✕</button>
-      </span>
+      <button class="bp-ok" id="bp-ok" title="сохранить и закрыть">✓</button>
+      <button class="bp-cancel" id="bp-cancel" title="отменить изменения">✕</button>
     </div>`;
   app.insertBefore(pop, app.querySelector('.calwrap'));   // над календарём, календарь сдвигается вниз
+  // выдвигаем строку гибкой задачи: сначала схлопнутая, затем в полную высоту
+  const flexRow = pop.querySelector('.bp-flexrow.collapsed');
+  if (flexRow) { void flexRow.offsetHeight; flexRow.classList.remove('collapsed'); }
   wirePopover();
 }
 
