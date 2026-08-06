@@ -328,11 +328,14 @@ input.f-low, select.f-low { border-color: var(--low); box-shadow: 0 0 0 2px rgba
 .movesheet { top: calc(8px + env(safe-area-inset-top)); left: 50%; right: auto; transform: translateX(-50%); }
 
 /* слайдер: цельная дорожка, под значками скользит подсветка */
-.blockpop .seg.slider { flex: 1 1 0; position: relative; display: grid; grid-template-columns: 1fr 1fr;
-  gap: 0; padding: 0; border: none; border-radius: var(--bp-r); background: rgba(255,255,255,.22);
-  overflow: hidden; }
-.blockpop .seg.slider .seg-thumb { position: absolute; top: 0; bottom: 0; left: 0; width: 50%;
-  border-radius: var(--bp-r); background: #fff;
+.blockpop .seg.slider { --seg-pad: 4px;
+  flex: 1 1 0; position: relative; display: grid; grid-template-columns: 1fr 1fr;
+  gap: 0; padding: var(--seg-pad); border: none; border-radius: var(--bp-r);
+  background: rgba(255,255,255,.22); overflow: hidden; }
+/* заливка чуть уже дорожки — по краям видно её фон */
+.blockpop .seg.slider .seg-thumb { position: absolute;
+  top: var(--seg-pad); bottom: var(--seg-pad); left: var(--seg-pad);
+  width: calc(50% - var(--seg-pad)); border-radius: calc(var(--bp-r) - 3px); background: #fff;
   transition: transform .26s cubic-bezier(.4, 0, .2, 1); }
 .blockpop .seg.slider[data-pos="1"] .seg-thumb { transform: translateX(100%); }
 .blockpop .seg.slider button { position: relative; z-index: 1; border: none; background: transparent;

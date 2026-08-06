@@ -1472,9 +1472,14 @@ function mountPopover() {
       <button class="bp-cancel" id="bp-cancel" title="отменить изменения">✕</button>
     </div>`;
   app.insertBefore(pop, app.querySelector('.calwrap'));   // над календарём, календарь сдвигается вниз
-  // выдвигаем строку гибкой задачи: сначала схлопнутая, затем в полную высоту
+  // Строка гибких настроек выдвигается только когда дело ТОЛЬКО ЧТО стало «без привязки
+  // ко времени». Любое другое изменение пересобирает панель — там она просто на месте.
   const flexRow = pop.querySelector('.bp-flexrow.collapsed');
-  if (flexRow) { void flexRow.offsetHeight; flexRow.classList.remove('collapsed'); }
+  if (flexRow) {
+    const justSwitched = state.segPos && state.segPos.type === '0';
+    if (justSwitched) { void flexRow.offsetHeight; }
+    flexRow.classList.remove('collapsed');
+  }
   // панель пересобирается целиком, поэтому подсветку слайдера рисуем на прежней позиции
   // и лишь затем сдвигаем — так фон перетекает под соседний значок, а не прыгает
   pop.querySelectorAll('.seg[data-seg]').forEach((el) => {
