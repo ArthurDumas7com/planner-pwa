@@ -26,7 +26,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
   -webkit-font-smoothing: antialiased; overscroll-behavior: none; }
 
 /* приложение занимает весь экран: страница не скроллится, скроллится только календарь */
-#app { height: 100dvh; display: flex; flex-direction: column;
+#app { position: relative; height: 100dvh; display: flex; flex-direction: column;
   padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); max-width: 1200px; margin: 0 auto; gap: 8px; }
 .topbar[hidden] { display: none; }
 
@@ -325,12 +325,13 @@ input.f-low, select.f-low { border-color: var(--low); box-shadow: 0 0 0 2px rgba
 /* строки: элементы тянутся, заполняя ширину */
 .bp-when, .bp-row, .bp-flexrow { display: flex; align-items: stretch; gap: var(--bp-gap); margin: 0; }
 .bp-when > *, .bp-row > *, .bp-flexrow > * { min-height: 42px; }
-.bp-when input[type=time] { flex: 1 1 0; text-align: center; font-variant-numeric: tabular-nums; }
+.bp-when input[type=time] { flex: 1 1 0; min-width: 0; padding: 11px 4px;
+  text-align: center; font-variant-numeric: tabular-nums; }
 .bp-dash, .bp-dur { display: none; }
 
 /* значки-кнопки: календарь даты и ✨ */
-.bp-cal, .bp-ai { flex: 0 0 46px; display: grid; place-items: center; cursor: pointer;
-  border: none; background: #fff; color: #16181a; font-size: 17px; line-height: 1; }
+.bp-cal, .bp-ai { flex: 0 0 40px; display: grid; place-items: center; cursor: pointer;
+  border: none; background: #fff; color: #16181a; font-size: 16px; line-height: 1; }
 .bp-cal:hover, .bp-ai:hover { background: #eaf0ff; }
 .bp-hidden-date { position: absolute; opacity: 0; width: 1px; height: 1px;
   padding: 0 !important; margin: 0 !important; border: none; pointer-events: none; min-height: 0 !important; }
@@ -384,6 +385,51 @@ input.f-low, select.f-low { border-color: var(--low); box-shadow: 0 0 0 2px rgba
 .bp-date-btn:hover { background: #a9d0ff; }
 .bp-date-btn.pale { background: rgba(188,220,255,.24); color: #eaf3ff; }
 .bp-hint, .bp-time, .bp-lab { display: none; }
+
+/* кнопка «повторение» в строке времени */
+.bp-rep { flex: 0 1 auto; min-width: 0; border: none; cursor: pointer; padding: 0 8px;
+  background: rgba(255,255,255,.22); color: #fff; font-size: 11.5px; line-height: 1;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bp-rep:hover { background: rgba(255,255,255,.34); }
+.bp-rep.on { background: #fff; color: #1b4dff; font-weight: 600; }
+
+/* настройки повторения: отдельная панель под шторкой, поверх календаря */
+.reppop { --bp-gap: 3px; --bp-r: 12px;
+  position: absolute; left: 8px; right: 8px; z-index: 40;
+  background: #1b4dff; color: #fff; border-radius: 18px;
+  padding: 10px; display: flex; flex-direction: column; gap: 8px;
+  box-shadow: 0 16px 34px rgba(0,0,0,.34); }
+.reppop .rep-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.reppop .rep-lab { font-size: 13px; color: rgba(255,255,255,.86); }
+.reppop .rep-endlab { margin-top: 2px; font-weight: 600; color: #fff; }
+.reppop input[type=number] { width: 58px; text-align: center; }
+.reppop input, .reppop select { background: #fff; color: #16181a; border: none;
+  border-radius: 10px; padding: 8px 10px; font-size: 14px; }
+.reppop input:disabled { background: rgba(255,255,255,.28); color: rgba(255,255,255,.7); }
+.reppop select { flex: 1 1 120px; }
+
+/* кружки дней недели, как в Google */
+.rep-wd { display: flex; gap: 4px; flex-wrap: wrap; }
+.rep-wd button { width: 32px; height: 32px; border-radius: 50%; border: none; cursor: pointer;
+  background: rgba(255,255,255,.22); color: #fff; font-size: 12px; line-height: 1; padding: 0; }
+.rep-wd button.on { background: #bcdcff; color: #0b2c8a; font-weight: 700; }
+
+/* «Заканчивается»: три варианта переключателем */
+.rep-opt { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; color: #fff; }
+.rep-opt span { color: #fff; }
+.rep-opt input[type=radio] { appearance: none; width: 18px; height: 18px; flex: none; padding: 0;
+  border-radius: 50%; background: transparent; box-shadow: inset 0 0 0 2px rgba(255,255,255,.6); }
+.rep-opt input[type=radio]:checked { background: #fff;
+  box-shadow: inset 0 0 0 2px #fff, inset 0 0 0 5px #1b4dff; }
+.rep-opt .rep-tail { font-size: 13px; color: rgba(255,255,255,.86); }
+
+.rep-actions { display: flex; gap: var(--bp-gap); margin-top: 2px; }
+.rep-cancel { flex: 1 1 0; background: rgba(255,255,255,.22); border: none; color: #fff;
+  border-radius: var(--bp-r); padding: 11px; font-size: 15px; cursor: pointer; }
+.rep-done { flex: 2 1 0; background: #fff; border: none; color: #1b4dff; font-weight: 700;
+  border-radius: var(--bp-r); padding: 11px; font-size: 15px; cursor: pointer; }
+.rep-cancel:hover { background: rgba(255,255,255,.34); }
+.rep-done:hover { background: #eaf0ff; }
 
 @media (max-width: 560px) {
   .blockpop { left: 8px !important; right: 8px; width: auto; }

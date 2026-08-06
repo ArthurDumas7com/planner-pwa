@@ -413,6 +413,63 @@ test('recurrence: everyDays=2 разворачивается корректно'
   }
 });
 
+test('recurrence: каждые 2 недели по пн и ср', () => {
+  // 21 июля 2026 — вторник; правило: недели через одну, понедельник и среда
+  const t = fixed({ start: new Date(2026, 6, 21, 9, 0).toISOString(), durationMinutes: 30,
+    recurrence: { freq: 'week', interval: 2, weekdays: [1, 3] } });
+  const occ = expandOccurrences(t, new Date(2026, 6, 20), new Date(2026, 7, 10, 23, 59));
+  const keys = occ.map((o) => toDateKey(o.start));
+  // неделя 19–25 июля: среда 22-е (понедельник 20-го раньше базы); следующая активная — 2–8 августа
+  eq(keys.join(','), '2026-07-22,2026-08-03,2026-08-05', `got ${keys.join(',')}`);
+});
+
+test('recurrence: ежемесячно тем же числом, короткий месяц пропускается', () => {
+  const t = fixed({ start: new Date(2026, 0, 31, 10, 0).toISOString(), durationMinutes: 30,
+    recurrence: { freq: 'month', interval: 1 } });
+  const occ = expandOccurrences(t, new Date(2026, 0, 1), new Date(2026, 3, 30, 23, 59));
+  const keys = occ.map((o) => toDateKey(o.start));
+  eq(keys.join(','), '2026-01-31,2026-03-31', 'февраля 31-го нет');
+});
+
+test('recurrence: ежемесячно в тот же день недели («первый четверг»)', () => {
+  // 6 августа 2026 — первый четверг месяца
+  const t = fixed({ start: new Date(2026, 7, 6, 10, 0).toISOString(), durationMinutes: 30,
+    recurrence: { freq: 'month', interval: 1, monthMode: 'nthWeekday' } });
+  const occ = expandOccurrences(t, new Date(2026, 7, 1), new Date(2026, 9, 31, 23, 59));
+  const keys = occ.map((o) => toDateKey(o.start));
+  eq(keys.join(','), '2026-08-06,2026-09-03,2026-10-01', `got ${keys.join(',')}`);
+  occ.forEach((o) => eq(o.start.getDay(), 4, 'всегда четверг'));
+});
+
+test('recurrence: ежегодно', () => {
+  const t = fixed({ start: new Date(2026, 7, 6, 10, 0).toISOString(), durationMinutes: 30,
+    recurrence: { freq: 'year', interval: 1 } });
+  const occ = expandOccurrences(t, new Date(2026, 0, 1), new Date(2029, 0, 1));
+  eq(occ.map((o) => toDateKey(o.start)).join(','), '2026-08-06,2027-08-06,2028-08-06');
+});
+
+test('recurrence: «после N повторений» обрывает ряд', () => {
+  const t = fixed({ start: new Date(2026, 6, 21, 9, 0).toISOString(), durationMinutes: 30,
+    recurrence: { freq: 'day', interval: 1, count: 3 } });
+  const occ = expandOccurrences(t, new Date(2026, 6, 21), new Date(2026, 6, 30, 23, 59));
+  eq(occ.length, 3, 'ровно три вхождения');
+  eq(toDateKey(occ[2].start), '2026-07-23');
+});
+
+test('recurrence: count считается от базы, а не от окна просмотра', () => {
+  const t = fixed({ start: new Date(2026, 6, 21, 9, 0).toISOString(), durationMinutes: 30,
+    recurrence: { freq: 'day', interval: 1, count: 3 } });
+  const occ = expandOccurrences(t, new Date(2026, 6, 24), new Date(2026, 6, 30, 23, 59));
+  eq(occ.length, 0, 'ряд закончился до окна');
+});
+
+test('recurrence: старый формат {everyDays} по-прежнему работает', () => {
+  const t = fixed({ start: new Date(2026, 6, 21, 7, 0).toISOString(), durationMinutes: 30,
+    recurrence: { everyDays: 3, until: '2026-07-27' } });
+  const occ = expandOccurrences(t, new Date(2026, 6, 21), new Date(2026, 7, 10, 23, 59));
+  eq(occ.map((o) => toDateKey(o.start)).join(','), '2026-07-21,2026-07-24,2026-07-27');
+});
+
 // ---------- free slots ----------
 test('freeSlots: fixed событие делит день на два слота (без буфера)', () => {
   const noBuf = { ...cfg, bufferMinutes: 0 };

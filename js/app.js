@@ -5,7 +5,7 @@ import {
 import { parseTask } from './core/parser.js';
 import { WEEKDAYS, WEEKDAY_ABBR } from './core/dict.js';
 import { schedule } from './core/scheduler.js';
-import { expandOccurrences } from './core/recurrence.js';
+import { expandOccurrences, normalizeRecurrence } from './core/recurrence.js';
 import { analyzeDrop, nearestFreeStart, suggestFreeSlots } from './core/conflicts.js';
 import {
   parseHM, formatHM, startOfDay, addDays, dayAt, toDateKey, fromDateKey, minutesOfDay,
@@ -52,9 +52,14 @@ function arm(key) {
   state.centerArmed = true;      // шторка займёт место сверху — покажем дело по центру остатка
   state.segPos = null;           // другое дело — слайдеры рисуем сразу, без перетекания
   state.popAnim = true;          // шторка раздвигается сверху, сдвигая календарь
+  state.repeat = null;           // настройки повторения открываются только по кнопке
   render();
 }
-function disarm() { if (state.armed) { state.armed = null; state.editSnapshot = null; render(); } }
+function disarm() {
+  if (!state.armed) return;
+  state.armed = null; state.editSnapshot = null; state.repeat = null;
+  render();
+}
 
 const app = document.getElementById('app');
 
@@ -453,6 +458,7 @@ function renderHome() {
     attachArm(el, { kind: 'item', itemId: el.dataset.item, chunkId: el.dataset.chunk || null });
   });
   mountPopover();
+  mountRepeatPanel();
   // у низких блоков ручки делаем тоньше, иначе они закроют середину и её нечем будет тянуть
   app.querySelectorAll('.block.armed').forEach((el) => {
     el.classList.toggle('tiny', el.offsetHeight < 56);
@@ -466,6 +472,195 @@ function renderHome() {
     scEl.dispatchEvent(new Event('scroll'));
   }
   if (state.centerArmed) { state.centerArmed = false; centerArmedBlock(); }
+}
+
+// ---------- повторение события (структура как в Google Календаре) ----------
+const WD_SHORT = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+const WD_FULL = ['воскресенье', 'понедельник', 'вторник', 'среду', 'четверг', 'пятницу', 'субботу'];
+// род дня недели: «в первый четверг», но «во вторую пятницу»
+const WD_FEM = [false, false, false, true, false, true, true];
+const ORD_M = ['', 'первый', 'второй', 'третий', 'четвёртый', 'пятый'];
+const ORD_F = ['', 'первую', 'вторую', 'третью', 'четвёртую', 'пятую'];
+
+/** «неделю» / «2 недели» / «5 недель» — единица под число. */
+function unitLabel(freq, n) {
+  const forms = {
+    day: ['день', 'дня', 'дней'],
+    week: ['неделю', 'недели', 'недель'],
+    month: ['месяц', 'месяца', 'месяцев'],
+    year: ['год', 'года', 'лет'],
+  }[freq] || ['', '', ''];
+  const n10 = n % 10; const n100 = n % 100;
+  if (n10 === 1 && n100 !== 11) return forms[0];
+  if (n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14)) return forms[1];
+  return forms[2];
+}
+
+/** «1 раз» / «4 раза» / «5 раз». */
+function timesLabel(n) {
+  const n10 = n % 10; const n100 = n % 100;
+  if (n10 === 1 && n100 !== 11) return 'раз';
+  if (n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14)) return 'раза';
+  return 'раз';
+}
+
+/** Короткое описание правила — подсказка на кнопке «повторение». */
+function recurrenceLabel(rec) {
+  const r = normalizeRecurrence(rec);
+  if (!r) return 'не повторяется';
+  const every = r.interval > 1 ? `каждые ${r.interval} ${unitLabel(r.freq, r.interval)}` : {
+    day: 'каждый день', week: 'каждую неделю', month: 'каждый месяц', year: 'каждый год',
+  }[r.freq];
+  const days = r.freq === 'week' && r.weekdays.length
+    ? `, ${r.weekdays.slice().sort((a, b) => a - b).map((d) => WD_SHORT[d]).join(', ')}` : '';
+  const ends = r.until ? `, до ${r.until}` : (r.count ? `, ${r.count} ${timesLabel(r.count)}` : '');
+  return `${every}${days}${ends}`;
+}
+
+/** «Ежемесячно в первый четверг» — по дате базового вхождения. */
+function nthWeekdayLabel(date) {
+  const k = Math.floor((date.getDate() - 1) / 7) + 1;
+  const wd = date.getDay();
+  const ord = (WD_FEM[wd] ? ORD_F : ORD_M)[k] || '';
+  return `Ежемесячно в ${ord} ${WD_FULL[wd]}`;
+}
+
+/** Черновик настроек повторения для активного дела. */
+function repeatDraft(t, startDate) {
+  const r = normalizeRecurrence(t.recurrence);
+  if (!r) {
+    return { freq: 'none', interval: 1, weekdays: [startDate.getDay()],
+      monthMode: 'dayOfMonth', endMode: 'never', until: '', count: 10 };
+  }
+  return {
+    freq: r.freq,
+    interval: r.interval,
+    weekdays: r.weekdays.length ? [...r.weekdays] : [startDate.getDay()],
+    monthMode: r.monthMode,
+    endMode: r.until ? 'on' : (r.count ? 'after' : 'never'),
+    until: r.until || '',
+    count: r.count || 10,
+  };
+}
+
+function mountRepeatPanel() {
+  document.getElementById('reppop')?.remove();
+  if (!state.repeat || !state.armed) return;
+  const t = armedTask();
+  const pop = document.getElementById('blockpop');
+  if (!t || !pop) { state.repeat = null; return; }
+  const d = state.repeat;
+  const startDate = t.start ? new Date(t.start) : new Date();
+
+  const el = document.createElement('div');
+  el.id = 'reppop';
+  el.className = 'reppop';
+  el.innerHTML = `
+    <div class="rep-row">
+      <span class="rep-lab">Повторять каждые</span>
+      <input type="number" id="rep-interval" min="1" max="99" value="${d.interval}"
+        ${d.freq === 'none' ? 'disabled' : ''}>
+      <select id="rep-freq">
+        <option value="none" ${d.freq === 'none' ? 'selected' : ''}>не повторять</option>
+        ${['day', 'week', 'month', 'year'].map((f) => `<option value="${f}" ${d.freq === f ? 'selected' : ''}>${unitLabel(f, d.interval)}</option>`).join('')}
+      </select>
+    </div>
+    ${d.freq === 'week' ? `
+    <div class="rep-row rep-wd-row">
+      <span class="rep-lab">Повторять в</span>
+      <div class="rep-wd">${[1, 2, 3, 4, 5, 6, 0].map((wd) => `<button class="${d.weekdays.includes(wd) ? 'on' : ''}" data-rep-wd="${wd}">${WD_SHORT[wd]}</button>`).join('')}</div>
+    </div>` : ''}
+    ${d.freq === 'month' ? `
+    <div class="rep-row">
+      <select id="rep-monthmode">
+        <option value="dayOfMonth" ${d.monthMode === 'dayOfMonth' ? 'selected' : ''}>Ежемесячно ${startDate.getDate()}-го числа</option>
+        <option value="nthWeekday" ${d.monthMode === 'nthWeekday' ? 'selected' : ''}>${nthWeekdayLabel(startDate)}</option>
+      </select>
+    </div>` : ''}
+    ${d.freq === 'none' ? '' : `
+    <div class="rep-lab rep-endlab">Заканчивается</div>
+    <label class="rep-opt ${d.endMode === 'never' ? 'on' : ''}">
+      <input type="radio" name="rep-end" value="never" ${d.endMode === 'never' ? 'checked' : ''}>
+      <span>Никогда</span>
+    </label>
+    <label class="rep-opt ${d.endMode === 'on' ? 'on' : ''}">
+      <input type="radio" name="rep-end" value="on" ${d.endMode === 'on' ? 'checked' : ''}>
+      <span>Дата</span>
+      <input type="date" id="rep-until" value="${d.until}" ${d.endMode === 'on' ? '' : 'disabled'}>
+    </label>
+    <label class="rep-opt ${d.endMode === 'after' ? 'on' : ''}">
+      <input type="radio" name="rep-end" value="after" ${d.endMode === 'after' ? 'checked' : ''}>
+      <span>После</span>
+      <input type="number" id="rep-count" min="1" max="999" value="${d.count}" ${d.endMode === 'after' ? '' : 'disabled'}>
+      <span class="rep-tail">повторений</span>
+    </label>`}
+    <div class="rep-actions">
+      <button class="rep-cancel" id="rep-cancel">Отмена</button>
+      <button class="rep-done" id="rep-done">Готово</button>
+    </div>`;
+  pop.insertAdjacentElement('afterend', el);
+  el.style.top = `${pop.offsetTop + pop.offsetHeight + 6}px`;
+  wireRepeatPanel(t, startDate);
+}
+
+function wireRepeatPanel(t, startDate) {
+  const d = state.repeat;
+  const redraw = () => mountRepeatPanel();
+
+  const freq = document.getElementById('rep-freq');
+  freq.onchange = (e) => {
+    d.freq = e.target.value;
+    if (d.freq === 'week' && !d.weekdays.length) d.weekdays = [startDate.getDay()];
+    redraw();
+  };
+  const interval = document.getElementById('rep-interval');
+  interval.onchange = (e) => { d.interval = Math.max(1, Number(e.target.value) || 1); redraw(); };
+
+  document.querySelectorAll('[data-rep-wd]').forEach((b) => {
+    b.onclick = () => {
+      const wd = Number(b.getAttribute('data-rep-wd'));
+      d.weekdays = d.weekdays.includes(wd) ? d.weekdays.filter((x) => x !== wd) : [...d.weekdays, wd];
+      if (!d.weekdays.length) d.weekdays = [wd];   // хотя бы один день должен остаться
+      redraw();
+    };
+  });
+  const mm = document.getElementById('rep-monthmode');
+  if (mm) mm.onchange = (e) => { d.monthMode = e.target.value; };
+
+  document.querySelectorAll('input[name="rep-end"]').forEach((r) => {
+    r.onchange = () => {
+      d.endMode = r.value;
+      if (d.endMode === 'on' && !d.until) {
+        const soon = addDays(startDate, 30);
+        d.until = toDateKey(soon);
+      }
+      redraw();
+    };
+  });
+  const until = document.getElementById('rep-until');
+  if (until) until.onchange = (e) => { d.until = e.target.value; };
+  const count = document.getElementById('rep-count');
+  if (count) count.onchange = (e) => { d.count = Math.max(1, Number(e.target.value) || 1); };
+
+  document.getElementById('rep-cancel').onclick = () => { state.repeat = null; render(); };
+  document.getElementById('rep-done').onclick = () => {
+    snapshot();
+    t.recurrence = buildRecurrence(d, startDate);
+    state.repeat = null;
+    persistAndReschedule();
+    render();
+  };
+}
+
+/** Собрать правило из черновика панели. null — «не повторять». */
+function buildRecurrence(d, startDate) {
+  if (d.freq === 'none') return null;
+  const rec = { freq: d.freq, interval: Math.max(1, d.interval) };
+  if (d.freq === 'week') rec.weekdays = d.weekdays.length ? [...d.weekdays] : [startDate.getDay()];
+  if (d.freq === 'month') rec.monthMode = d.monthMode;
+  if (d.endMode === 'on' && d.until) rec.until = d.until;
+  if (d.endMode === 'after') rec.count = Math.max(1, d.count);
+  return rec;
 }
 
 /** Показать активное дело по центру той части календаря, что осталась под шторкой. */
@@ -1436,6 +1631,8 @@ function mountPopover() {
       <span class="bp-dash">–</span>
       <input type="time" id="bp-end" value="${formatHM(endMin)}" step="300" title="конец">
       <span class="bp-dur">${pos.durationMinutes} мин</span>
+      ${isFixed ? `<button class="bp-rep ${t.recurrence ? 'on' : ''}" id="bp-rep"
+        title="${recurrenceLabel(t.recurrence)}">повторение</button>` : ''}
       <button class="bp-ai" id="bp-ai" title="перенести текстом">✨</button>
     </div>
     <div class="bp-row">
@@ -1583,6 +1780,14 @@ function wirePopover() {
   const aiBtn = document.getElementById('bp-ai');
   if (aiBtn) aiBtn.onclick = () => openMoveByText();
 
+  // «повторение» — панель настроек ниже шторки, поверх календаря
+  const repBtn = document.getElementById('bp-rep');
+  if (repBtn) repBtn.onclick = () => {
+    if (state.repeat) { state.repeat = null; render(); return; }   // повторное нажатие закрывает
+    state.repeat = repeatDraft(t, t.start ? new Date(t.start) : new Date());
+    render();
+  };
+
   // дробление задачи (только для гибких): целиком или фрагментами от minChunkFloorMinutes
   document.querySelectorAll('#blockpop [data-bp-split]').forEach((b) => {
     b.onclick = () => {
@@ -1640,6 +1845,7 @@ function wirePopover() {
     }
     state.armed = null;
     state.editSnapshot = null;
+    state.repeat = null;
     render();
   };
   const del = document.getElementById('bp-del');
