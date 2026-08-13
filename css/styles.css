@@ -29,7 +29,7 @@
   /* метка сетки календаря: четырёхлучевая звёздочка на пересечении часа и границы дня.
      Цвет внутри картинки задаётся явно (переменные в data-URI не подставляются) —
      менять вместе с --grid. */
-  --cross: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' preserveAspectRatio='xMidYMid meet'%3E%3Cpath d='M8 1.4 Q8.85 7.15 14.6 8 Q8.85 8.85 8 14.6 Q7.15 8.85 1.4 8 Q7.15 7.15 8 1.4 Z' fill='%234f74ff'/%3E%3C/svg%3E");
+  --cross: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' preserveAspectRatio='xMidYMid meet'%3E%3Cpath d='M8 4.7 Q8.425 7.575 11.3 8 Q8.425 8.425 8 11.3 Q7.575 8.425 4.7 8 Q7.575 7.575 8 4.7 Z' fill='%234f74ff'/%3E%3C/svg%3E");
 }
 
 * { box-sizing: border-box; }
