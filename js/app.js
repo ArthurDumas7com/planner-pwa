@@ -8,8 +8,9 @@ import { schedule } from './core/scheduler.js';
 import { expandOccurrences, normalizeRecurrence } from './core/recurrence.js';
 import { analyzeDrop, nearestFreeStart, suggestFreeSlots } from './core/conflicts.js';
 import {
-  parseHM, formatHM, startOfDay, addDays, dayAt, toDateKey, fromDateKey, minutesOfDay,
+  parseHM, formatHM, startOfDay, addDays, dayAt, toDateKey, fromDateKey, minutesOfDay, pad2,
 } from './core/time.js';
+import { dayWindow } from './core/freeSlots.js';
 import {
   loadItems, saveItems, loadConfig, saveConfig,
 } from './store.js';
@@ -32,6 +33,9 @@ const state = {
   adding: false,    // открыта ли плашка ввода
   undoStack: [],    // снимки плана для отката
   redoStack: [],    // и для повтора отменённого
+  dayCursor: null,  // какой день открыт на экране одного дня ('YYYY-MM-DD'); null — сегодня
+  menu: null,       // открыто меню «⋯»: {dateKey: null|'YYYY-MM-DD'}
+  todayKey: toDateKey(new Date()),   // чтобы заметить смену суток при работающем приложении
 };
 
 const DRAG_TOLERANCE = 5;
@@ -145,9 +149,13 @@ function splitVictims(victims) {
   return { blocking, movable };
 }
 
-/** Снимок плана перед изменением — для кнопок «Отменить» / «Вперёд». */
+/**
+ * Снимок перед изменением — для кнопок «Отменить» / «Вперёд».
+ * Настройки входят в снимок: границы окна планирования меняют размещение дел,
+ * и откат без них вернул бы план, который тут же разъедется обратно.
+ */
 function snapshot() {
-  state.undoStack.push(JSON.stringify(state.items));
+  state.undoStack.push(JSON.stringify({ items: state.items, config: state.config }));
   if (state.undoStack.length > 20) state.undoStack.shift();
   state.redoStack = [];            // новое действие обрывает ветку «вперёд»
 }
@@ -156,17 +164,66 @@ function canRedo() { return state.redoStack.length > 0; }
 
 function applyHistory(fromStack, toStack) {
   if (!fromStack.length) return;
-  toStack.push(JSON.stringify(state.items));
-  state.items = JSON.parse(fromStack.pop());
+  toStack.push(JSON.stringify({ items: state.items, config: state.config }));
+  const snap = JSON.parse(fromStack.pop());
+  state.items = snap.items;
+  state.config = snap.config || state.config;
   state.armed = null;
   state.yieldFocus = null;
   saveItems(state.items);          // без перепланирования — возвращаем ровно то состояние
+  saveConfig(state.config);
   render();
 }
 function undoLast() { applyHistory(state.undoStack, state.redoStack); }
 function redoNext() { applyHistory(state.redoStack, state.undoStack); }
 function el(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }
 function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+/** Сколько дней на экране: 1 — экран одного дня, 3/5 — календарь. */
+function dayCountSetting() {
+  return state.config.daysVisible || (window.innerWidth < 700 ? 3 : 5);
+}
+
+/** 'YYYY-MM-DD' -> '14.08' — короткая дата для кнопок. */
+function shortDate(key) {
+  const d = fromDateKey(key);
+  return `${d.getDate()}.${pad2(d.getMonth() + 1)}`;
+}
+
+// ---------- верхняя панель (общая для календаря и экрана одного дня) ----------
+function topRowHtml(dayCount) {
+  const btn = (n) => `<button class="${dayCount === n ? 'on' : ''}" data-days="${n}" title="${n === 1 ? 'один день' : `${n} дня`}">${n}</button>`;
+  return `<div class="toprow">
+      <div class="toprow-left">
+        <div class="seg rangeseg">${btn(1)}${btn(3)}${btn(5)}</div>
+        <button id="today-btn" class="iconbtn" hidden title="сегодня">⌖</button>
+      </div>
+      <div class="toprow-right">
+        <button id="menu-btn" class="iconbtn" title="настройки">⋯</button>
+        <button id="undo-toolbar" class="iconbtn" title="отменить" ${canUndo() ? '' : 'disabled'}>↶</button>
+        <button id="redo-toolbar" class="iconbtn" title="вперёд" ${canRedo() ? '' : 'disabled'}>↷</button>
+        <button id="fab" class="fab" aria-label="Добавить">+</button>
+      </div>
+    </div>`;
+}
+
+function wireTopRow() {
+  document.getElementById('fab').onclick = openAdd;
+  app.querySelectorAll('[data-days]').forEach((b) => {
+    b.onclick = () => {
+      state.config = { ...state.config, daysVisible: Number(b.getAttribute('data-days')) };
+      saveConfig(state.config);
+      state.armed = null;
+      render();
+    };
+  });
+  document.getElementById('menu-btn').onclick = () => {
+    state.menu = state.menu ? null : { dateKey: null };
+    render();
+  };
+  document.getElementById('undo-toolbar')?.addEventListener('click', undoLast);
+  document.getElementById('redo-toolbar')?.addEventListener('click', redoNext);
+}
 
 // ---------- главный экран (3 дня) ----------
 function dayBlocks(day) {
@@ -262,6 +319,41 @@ function mkBlock(item, startDate, durationMinutes, chunkId) {
   };
 }
 
+/** Для дел, которым не нашлось места, посчитать до 3 вариантов размещения. */
+function refreshRiskSuggestions(atRisk, now) {
+  const horizon = horizonForPreview(now);
+  atRisk.forEach((t) => {
+    const dur = (t.type === TYPE.FIXED ? t.durationMinutes : targetDuration(t)) || 60;
+    const free = suggestFreeSlots(dur, state.items, state.config, now, horizon, 3, t.id);
+    // если чисто свободных окон мало — добираем места, занятые делами, которые можно подвинуть
+    t.riskSuggestions = free.length >= 3 ? free : free.concat(slotsFreedByYielding(t, dur, free, 3 - free.length));
+  });
+}
+
+/**
+ * Дело, для которого сейчас выбирают новое место (клик по ↦ или кнопка «перенести»),
+ * с посчитанными вариантами. null — никто не выбран.
+ */
+function focusedItem(now) {
+  const focus = state.yieldFocus ? state.items.find((x) => x.id === state.yieldFocus) : null;
+  if (!focus) { state.yieldFocus = null; return null; }
+  const dur = (focus.type === TYPE.FIXED ? focus.durationMinutes : targetDuration(focus)) || 60;
+  // текущее место исключаем — предлагать «перенести туда же» бессмысленно
+  const curStart = focus.start ? new Date(focus.start).valueOf()
+    : (focus.chunks && focus.chunks[0] ? new Date(focus.chunks[0].start).valueOf() : null);
+  focus.riskSuggestions = suggestFreeSlots(dur, state.items, state.config, now,
+    horizonForPreview(now), 6, focus.id)
+    .filter((s) => curStart == null || Math.abs(new Date(s.start).valueOf() - curStart) > 60000)
+    .slice(0, 3);
+  return focus;
+}
+
+/** «чт, 14 авг, 10:00» — подпись варианта переноса. */
+function slotLabel(startISO) {
+  const d = new Date(startISO);
+  return `${d.toLocaleDateString('ru-RU', { weekday: 'short', day: 'numeric', month: 'short' })}, ${formatHM(minutesOfDay(d))}`;
+}
+
 function renderHome() {
   const keepScroll = document.getElementById('daysScroll')?.scrollTop;   // до пересборки DOM
   const now = new Date();
@@ -284,13 +376,7 @@ function renderHome() {
   const conflicts = state.items.filter((t) => t.conflict);
 
   // варианты размещения для «не помещается» — считаем и показываем прямо в календаре
-  const horizon = horizonForPreview(now);
-  atRisk.forEach((t) => {
-    const dur = (t.type === TYPE.FIXED ? t.durationMinutes : targetDuration(t)) || 60;
-    const free = suggestFreeSlots(dur, state.items, state.config, now, horizon, 3, t.id);
-    // если чисто свободных окон мало — добираем места, занятые делами, которые можно подвинуть
-    t.riskSuggestions = free.length >= 3 ? free : free.concat(slotsFreedByYielding(t, dur, free, 3 - free.length));
-  });
+  refreshRiskSuggestions(atRisk, now);
 
   // Кандидаты «уступить место»: сначала собираем причастных, затем оставляем только тех,
   // чей сдвиг реально решает проблему и не порождает цепочку новых переносов.
@@ -334,18 +420,7 @@ function renderHome() {
   }
 
   // Выбрано мешающее дело (клик по ↦) — показываем варианты для ЕГО переноса.
-  const focus = state.yieldFocus ? state.items.find((x) => x.id === state.yieldFocus) : null;
-  if (focus) {
-    const dur = (focus.type === TYPE.FIXED ? focus.durationMinutes : targetDuration(focus)) || 60;
-    // текущее место исключаем — предлагать «перенести туда же» бессмысленно
-    const curStart = focus.start ? new Date(focus.start).valueOf()
-      : (focus.chunks && focus.chunks[0] ? new Date(focus.chunks[0].start).valueOf() : null);
-    focus.riskSuggestions = suggestFreeSlots(dur, state.items, state.config, now, horizon, 6, focus.id)
-      .filter((s) => curStart == null || Math.abs(new Date(s.start).valueOf() - curStart) > 60000)
-      .slice(0, 3);
-  } else if (state.yieldFocus) {
-    state.yieldFocus = null;
-  }
+  const focus = focusedItem(now);
 
   // маркеры возможных мест на таймлайне (конфликты + не помещающиеся задачи)
   const markers = [];
@@ -397,35 +472,13 @@ function renderHome() {
         <button class="btn ghost small" id="focus-cancel">Отмена</button></div>`
     : ((conflicts.length || atRisk.length) ? `<div class="hintbar">⚠ ${conflicts.length ? 'Наложение' : 'Не помещается'}:
       выберите синее окно для переноса или кликните по делу с ↦, чтобы выбрать место для него</div>` : '')}
-    <div class="toprow">
-      <div class="toprow-left">
-        <div class="seg rangeseg">
-          <button class="${dayCount === 3 ? 'on' : ''}" data-days="3" title="3 дня">3</button>
-          <button class="${dayCount === 5 ? 'on' : ''}" data-days="5" title="5 дней">5</button>
-        </div>
-        <button id="today-btn" class="iconbtn" hidden title="сегодня">⌖</button>
-      </div>
-      <div class="toprow-right">
-        <button id="undo-toolbar" class="iconbtn" title="отменить" ${canUndo() ? '' : 'disabled'}>↶</button>
-        <button id="redo-toolbar" class="iconbtn" title="вперёд" ${canRedo() ? '' : 'disabled'}>↷</button>
-        <button id="replan" class="iconbtn" title="пересчитать план">⟳</button>
-        <button id="fab" class="fab" aria-label="Добавить">+</button>
-      </div>
-    </div>
+    ${topRowHtml(dayCount)}
     <div class="calwrap">
       ${scale}
       <div class="days-scroll" id="daysScroll"><div class="days">${cols}</div></div>
     </div>
   `;
-  document.getElementById('fab').onclick = openAdd;
-  document.getElementById('replan').onclick = () => { persistAndReschedule(); render(); };
-  app.querySelectorAll('[data-days]').forEach((b) => {
-    b.onclick = () => {
-      state.config = { ...state.config, daysVisible: Number(b.getAttribute('data-days')) };
-      saveConfig(state.config);
-      render();
-    };
-  });
+  wireTopRow();
   const sub = document.querySelector('.topbar .sub');
   if (sub) sub.textContent = `${dayCount} ${dayCount === 5 ? 'дней' : 'дня'} вперёд`;
   setupDayScroll(dayCount);
@@ -440,9 +493,8 @@ function renderHome() {
       placeAtRiskAt(el.getAttribute('data-place'), el.getAttribute('data-start'), el.getAttribute('data-displaces') || null);
     };
   });
-  document.getElementById('undo-toolbar')?.addEventListener('click', undoLast);
-  document.getElementById('redo-toolbar')?.addEventListener('click', redoNext);
   document.getElementById('focus-cancel')?.addEventListener('click', () => { state.yieldFocus = null; render(); });
+  wirePlanLimits();
 
   app.querySelectorAll('.block[data-item]').forEach((el) => {
     // дело с ↦: первый клик — показать варианты для него; если оно уже выбрано,
@@ -459,6 +511,7 @@ function renderHome() {
   });
   mountPopover();
   mountRepeatPanel();
+  mountMenu();
   // у низких блоков ручки делаем тоньше, иначе они закроют середину и её нечем будет тянуть
   app.querySelectorAll('.block.armed').forEach((el) => {
     el.classList.toggle('tiny', el.offsetHeight < 56);
@@ -472,6 +525,312 @@ function renderHome() {
     scEl.dispatchEvent(new Event('scroll'));
   }
   if (state.centerArmed) { state.centerArmed = false; centerArmedBlock(); }
+}
+
+// ---------- начальный экран: один день ----------
+const MONTHS_UP = ['ЯНВ', 'ФЕВ', 'МАР', 'АПР', 'МАЙ', 'ИЮН', 'ИЮЛ', 'АВГ', 'СЕН', 'ОКТ', 'НОЯ', 'ДЕК'];
+
+/** «30 мин» / «1 ч 30 м» / «2 ч». */
+function durLabel(min) {
+  const h = Math.floor(min / 60);
+  const m = Math.round(min % 60);
+  if (!h) return `${m} мин`;
+  return m ? `${h} ч ${m} м` : `${h} ч`;
+}
+
+/** Карточка дела на экране одного дня. */
+function todayCardHtml(b, now) {
+  const running = !b.done && b.startMin <= minutesOfDay(now) && b.endMin > minutesOfDay(now)
+    && b.dateKey === toDateKey(now);
+  const cls = [
+    b.nature, b.done ? 'done' : '', b.unplaced ? 'unplaced' : '',
+    b.atRisk ? 'risk' : '', running ? 'running' : '',
+    b.itemId === state.highlightId ? 'justadded' : '',
+    b.type === TYPE.FIXED ? 'fixed' : 'flex',
+  ].filter(Boolean).join(' ');
+  return `<div class="tcard ${cls}" data-item="${b.itemId}" data-chunk="${b.chunkId || ''}"
+      ${b.unplaced ? 'data-unplaced="1"' : ''}>
+      <div class="tc-head">
+        <div class="tc-title">${esc(b.title)}</div>
+        <div class="tc-acts">
+          <button class="tc-btn ok" data-done="${b.itemId}" title="сделано">✓</button>
+          <button class="tc-btn mv" data-moveitem="${b.itemId}" title="перенести">↷</button>
+        </div>
+      </div>
+      <div class="tc-when">
+        <div class="tc-t"><b>${formatHM(b.startMin)}</b><span>начало</span></div>
+        <div class="tc-dur">${durLabel(b.durationMinutes)}</div>
+        <div class="tc-t"><b>${formatHM(b.endMin)}</b><span>конец</span></div>
+      </div>
+      ${b.unplaced ? '<div class="tc-note">не размещено — выберите место</div>' : ''}
+    </div>`;
+}
+
+/**
+ * Дело, которому места не нашлось вовсе. Срок уже сегодня (или прошёл), а в календаре
+ * его нет — на экране дня оно должно быть видно, иначе просто потеряется.
+ */
+function stuckCardHtml(t) {
+  return `<div class="tcard risk" data-item="${t.id}" data-chunk="" data-unplaced="1">
+      <div class="tc-head">
+        <div class="tc-title">${esc(t.title)}</div>
+        <div class="tc-acts">
+          <button class="tc-btn ok" data-done="${t.id}" title="сделано">✓</button>
+          <button class="tc-btn mv" data-moveitem="${t.id}" title="выбрать место">↷</button>
+        </div>
+      </div>
+      <div class="tc-note">${esc(t.atRiskReason || 'не помещается')}</div>
+    </div>`;
+}
+
+function renderToday() {
+  const now = new Date();
+  const day = state.dayCursor ? fromDateKey(state.dayCursor) : startOfDay(now);
+  const isToday = toDateKey(day) === toDateKey(now);
+  state.yieldIds = new Set();          // на этом экране «уступить место» не предлагаем
+
+  const atRisk = state.items.filter((t) => t.atRisk && t.status !== STATUS.DONE);
+  refreshRiskSuggestions(atRisk, now);
+  const focus = focusedItem(now);
+
+  const { blocks } = dayBlocks(day);
+  const doneCount = blocks.filter((b) => b.done).length;
+  const leftMin = blocks.filter((b) => !b.done).reduce((s, b) => s + b.durationMinutes, 0);
+
+  // просроченные и «не помещается» с сегодняшним сроком — их в календаре нет,
+  // но сделать их надо именно в этот день
+  const dayKey = toDateKey(day);
+  const stuck = atRisk.filter((t) => t.deadline && t.deadline <= dayKey
+    && !(t.chunks || []).length && !blocks.some((b) => b.itemId === t.id));
+
+  const list = (blocks.length || stuck.length)
+    ? blocks.map((b) => todayCardHtml(b, now)).join('')
+    : `<div class="tempty">${isToday ? 'На сегодня дел нет' : 'В этот день дел нет'}
+        <span>кнопка «+» — добавить</span></div>`;
+
+  app.innerHTML = `
+    ${topRowHtml(1)}
+    <div class="todayhead">
+      <div class="th-left">
+        <div class="th-wd">${day.toLocaleDateString('ru-RU', { weekday: 'long' })}${isToday ? ' · сегодня' : ''}</div>
+        <div class="th-day">${pad2(day.getDate())}.${pad2(day.getMonth() + 1)}</div>
+        <div class="th-mon">${MONTHS_UP[day.getMonth()]}</div>
+      </div>
+      <div class="th-right">
+        <div class="th-nav">
+          <button id="day-prev" title="предыдущий день">‹</button>
+          ${isToday ? '' : '<button id="day-today" class="th-today" title="вернуться к сегодня">сегодня</button>'}
+          <button id="day-next" title="следующий день">›</button>
+        </div>
+        <div class="th-times">
+          <div class="th-meta"><b id="th-clock">${formatHM(minutesOfDay(now))}</b><span>сейчас</span></div>
+          <div class="th-meta"><b>${durLabel(leftMin)}</b><span>${doneCount ? 'осталось' : 'запланировано'}</span></div>
+        </div>
+      </div>
+    </div>
+    ${focus ? `<div class="movepick">
+      <div class="mp-title">Куда перенести «${esc(focus.title)}»?</div>
+      <div class="mp-opts">${(focus.riskSuggestions || []).map((s) => `<button data-place="${focus.id}" data-start="${s.start}">${slotLabel(s.start)}</button>`).join('')
+      || '<span class="mp-none">свободных окон нет</span>'}</div>
+      <button class="mp-cancel" id="focus-cancel">Отмена</button>
+    </div>` : ''}
+    <div class="todaywrap">
+      <div class="tlist-head">
+        <div class="tl-title">${isToday ? 'Дела на сегодня' : 'Дела на день'}</div>
+        ${blocks.length ? `<div class="tl-count">${doneCount} из ${blocks.length}</div>` : ''}
+      </div>
+      <div class="tlist">${list}</div>
+      ${stuck.length ? `<div class="tl-sub">⚠ Не помещается</div>
+        <div class="tlist">${stuck.map(stuckCardHtml).join('')}</div>` : ''}
+    </div>`;
+
+  wireTopRow();
+  document.getElementById('day-prev').onclick = () => goToDay(addDays(day, -1));
+  document.getElementById('day-next').onclick = () => goToDay(addDays(day, 1));
+  document.getElementById('day-today')?.addEventListener('click', () => goToDay(startOfDay(new Date())));
+  document.getElementById('focus-cancel')?.addEventListener('click', () => { state.yieldFocus = null; render(); });
+
+  app.querySelectorAll('[data-done]').forEach((b) => {
+    b.onclick = (e) => { e.stopPropagation(); state.armed = null; markDone(b.dataset.done); };
+  });
+  app.querySelectorAll('[data-moveitem]').forEach((b) => {
+    b.onclick = (e) => { e.stopPropagation(); state.armed = null; movePastItem(b.dataset.moveitem); };
+  });
+  app.querySelectorAll('[data-place]').forEach((b) => {
+    b.onclick = () => {
+      snapshot();
+      placeAtRiskAt(b.getAttribute('data-place'), b.getAttribute('data-start'), null);
+    };
+  });
+  app.querySelectorAll('.tcard').forEach((card) => {
+    card.onclick = (e) => {
+      if (e.target.closest('button')) return;
+      // не размещённому делу править нечего — сразу предлагаем выбрать место
+      if (card.dataset.unplaced) { state.yieldFocus = card.dataset.item; render(); return; }
+      arm({ kind: 'item', itemId: card.dataset.item, chunkId: card.dataset.chunk || null });
+    };
+  });
+
+  mountAddSheet();
+  mountPopover();
+  mountRepeatPanel();
+  mountMenu();
+  if (state.centerArmed) {
+    state.centerArmed = false;
+    armedEl()?.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+/** Перелистнуть экран одного дня. */
+function goToDay(day) {
+  state.dayCursor = toDateKey(day) === toDateKey(new Date()) ? null : toDateKey(day);
+  state.armed = null;
+  render();
+}
+
+// ---------- ограничители окна планирования ----------
+const LIMIT_SNAP = 15;       // ручки встают по четвертям часа
+const LIMIT_MIN_WINDOW = 60; // окно не уже часа
+
+/** Записать окно планирования: общее для всех дней или своё у одного дня. */
+function setPlanWindow(dateKey, edge, minutes) {
+  const cfg = { ...state.config, dayWindows: { ...(state.config.dayWindows || {}) } };
+  const cur = dateKey ? (cfg.dayWindows[dateKey] || {}) : cfg;
+  const startMin = parseHM(cur.start || cur.workStart || state.config.workStart);
+  const endMin = parseHM(cur.end || cur.workEnd || state.config.workEnd);
+  const v = Math.round(minutes / LIMIT_SNAP) * LIMIT_SNAP;
+  const start = edge === 'start' ? clampN(v, 0, endMin - LIMIT_MIN_WINDOW) : startMin;
+  const end = edge === 'end' ? clampN(v, startMin + LIMIT_MIN_WINDOW, 24 * 60) : endMin;
+  if (dateKey) cfg.dayWindows[dateKey] = { start: formatHM(start), end: formatHM(end) };
+  else { cfg.workStart = formatHM(start); cfg.workEnd = formatHM(end); }
+  state.config = cfg;
+  saveConfig(cfg);
+}
+
+/** Убрать индивидуальное окно дня — вернуть его к общему. */
+function clearDayWindow(dateKey) {
+  const windows = { ...(state.config.dayWindows || {}) };
+  delete windows[dateKey];
+  state.config = { ...state.config, dayWindows: windows };
+  saveConfig(state.config);
+}
+
+/**
+ * Перетаскивание ручки. По умолчанию двигает границу сразу для всех дней;
+ * если у дня уже есть своё окно — двигает только его (чтобы не сбить остальные).
+ */
+function wirePlanLimits() {
+  app.querySelectorAll('.plangrip').forEach((grip) => {
+    grip.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try { grip.setPointerCapture?.(e.pointerId); } catch { /* не критично */ }
+      const edge = grip.dataset.lim;
+      const dateKey = grip.dataset.date;
+      const perDay = !!(state.config.dayWindows || {})[dateKey];
+      let moved = false;
+      const move = (ev) => {
+        const pos = pointerToDayMinute(ev);
+        if (!pos) return;
+        if (!moved) { moved = true; snapshot(); }
+        setPlanWindow(perDay ? dateKey : null, edge, pos.minute);
+        renderHome();
+      };
+      const up = () => {
+        document.removeEventListener('pointermove', move);
+        document.removeEventListener('pointerup', up);
+        if (!moved) return;
+        persistAndReschedule();
+        render();
+      };
+      document.addEventListener('pointermove', move);
+      document.addEventListener('pointerup', up);
+    });
+  });
+}
+
+// ---------- меню «⋯»: окно планирования ----------
+function mountMenu() {
+  document.getElementById('menupop')?.remove();
+  if (!state.menu) return;
+  const m = state.menu;
+  const windows = state.config.dayWindows || {};
+  const own = m.dateKey ? (windows[m.dateKey] || {}) : {};
+  const start = m.dateKey ? (own.start || state.config.workStart) : state.config.workStart;
+  const end = m.dateKey ? (own.end || state.config.workEnd) : state.config.workEnd;
+  const days = Object.keys(windows).sort();
+
+  const pop = document.createElement('div');
+  pop.id = 'menupop';
+  pop.className = 'menupop';
+  pop.innerHTML = `
+    <div class="mn-title">Окно планирования</div>
+    <div class="mn-sub">Дела без привязки ко времени алгоритм ставит только внутри него.
+      Границы можно тянуть прямо на календаре.</div>
+    <div class="seg mn-scope">
+      <button class="${m.dateKey ? '' : 'on'}" data-scope="all">все дни</button>
+      <button class="${m.dateKey ? 'on' : ''}" data-scope="one">отдельный день</button>
+    </div>
+    ${m.dateKey ? `<div class="mn-row">
+      <span class="mn-lab">день</span>
+      <input type="date" id="mn-date" value="${m.dateKey}">
+    </div>` : ''}
+    <div class="mn-row">
+      <span class="mn-lab">с</span><input type="time" id="mn-start" step="900" value="${start}">
+      <span class="mn-lab">по</span><input type="time" id="mn-end" step="900" value="${end}">
+    </div>
+    ${m.dateKey && windows[m.dateKey] ? '<button class="mn-reset" id="mn-reset">вернуть день к общему окну</button>' : ''}
+    ${days.length ? `<div class="mn-list">
+      <div class="mn-lab">свои окна у дней:</div>
+      ${days.map((k) => `<div class="mn-item"><button data-open-day="${k}">${shortDate(k)} · ${windows[k].start}–${windows[k].end}</button>
+        <button class="mn-x" data-del-day="${k}" title="убрать">✕</button></div>`).join('')}
+    </div>` : ''}
+    <div class="mn-actions">
+      <button class="mn-ghost" id="mn-replan">пересчитать план</button>
+      <button class="mn-done" id="mn-close">Готово</button>
+    </div>`;
+  app.appendChild(pop);
+  wireMenu();
+}
+
+function wireMenu() {
+  const m = state.menu;
+  const apply = (edge, value) => {
+    if (!value) return;
+    snapshot();
+    setPlanWindow(m.dateKey, edge, parseHM(value));
+    persistAndReschedule();
+    render();
+  };
+  document.querySelectorAll('#menupop [data-scope]').forEach((b) => {
+    b.onclick = () => {
+      m.dateKey = b.dataset.scope === 'one' ? (m.dateKey || toDateKey(new Date())) : null;
+      render();
+    };
+  });
+  const dateEl = document.getElementById('mn-date');
+  if (dateEl) dateEl.onchange = (e) => { m.dateKey = e.target.value || m.dateKey; render(); };
+  document.getElementById('mn-start').onchange = (e) => apply('start', e.target.value);
+  document.getElementById('mn-end').onchange = (e) => apply('end', e.target.value);
+  document.getElementById('mn-reset')?.addEventListener('click', () => {
+    snapshot();
+    clearDayWindow(m.dateKey);
+    persistAndReschedule();
+    render();
+  });
+  document.querySelectorAll('#menupop [data-open-day]').forEach((b) => {
+    b.onclick = () => { m.dateKey = b.dataset.openDay; render(); };
+  });
+  document.querySelectorAll('#menupop [data-del-day]').forEach((b) => {
+    b.onclick = () => {
+      snapshot();
+      clearDayWindow(b.dataset.delDay);
+      persistAndReschedule();
+      render();
+    };
+  });
+  document.getElementById('mn-replan').onclick = () => { persistAndReschedule(); render(); };
+  document.getElementById('mn-close').onclick = () => { state.menu = null; render(); };
 }
 
 // ---------- повторение события (структура как в Google Календаре) ----------
@@ -875,6 +1234,8 @@ function applyZoom(px) {
   const h = Math.round(span * state.zoom);
   document.querySelectorAll('.timeline').forEach((el) => { el.style.height = `${h}px`; });
   if (bar) bar.style.height = `${h}px`;
+  // шаг сетки в пикселях: по нему CSS расставляет крестики на пересечениях
+  document.documentElement.style.setProperty('--hourpx', `${60 * state.zoom}px`);
   // шапка шкалы должна быть ровно такой же высоты, как заголовок дня + цветная полоска,
   // иначе метки времени не совпадут с сеткой
   const head = document.querySelector('.dayhead');
@@ -970,14 +1331,36 @@ function renderDayColumn(day, now, markers = [], lo, span) {
       style="top:${top}%;height:${height}%" title="${esc(m.hint || 'поставить сюда')}">${m.label}</div>`;
   }).join('');
 
+  const dayKey = toDateKey(day);
+  const own = !!(state.config.dayWindows || {})[dayKey];   // у дня своё окно планирования
   const label = `${day.toLocaleDateString('ru-RU', { weekday: 'short' })}<b>${day.getDate()}</b>`;
   return `
     <div class="day">
-      <div class="dayhead ${isToday ? 'today' : ''}">${label}</div>
+      <div class="dayhead ${isToday ? 'today' : ''}">${label}${own ? '<i class="ownwin" title="у дня своё окно планирования"></i>' : ''}</div>
       ${bar}
-      <div class="timeline" data-date="${toDateKey(day)}" data-lo="${lo}" data-span="${span}"
-        style="--span:${span};--hstep:${(60 / span) * 100}%">${nowLine}${ghostEls}${blockEls}</div>
+      <div class="timeline" data-date="${dayKey}" data-lo="${lo}" data-span="${span}"
+        style="--span:${span}">${planLimitsHtml(day, lo, span)}${nowLine}${ghostEls}${blockEls}</div>
     </div>`;
+}
+
+/**
+ * Ограничители окна планирования: затемнение вне окна и две «ручки» на границах.
+ * Внутрь окна алгоритм ставит дела без привязки ко времени; события «ко времени»
+ * можно ставить где угодно — окно им не запрет.
+ */
+function planLimitsHtml(day, lo, span) {
+  const { start, end } = dayWindow(state.config, day);
+  const pct = (m) => ((m - lo) / span) * 100;
+  const dayKey = toDateKey(day);
+  return `
+    <div class="planoff top" style="height:${pct(start)}%"></div>
+    <div class="planoff bottom" style="top:${pct(end)}%"></div>
+    <div class="planline" style="top:${pct(start)}%"></div>
+    <div class="planline" style="top:${pct(end)}%"></div>
+    <div class="plangrip" data-lim="start" data-date="${dayKey}" style="top:${pct(start)}%"
+      title="не планировать раньше — потяните">${formatHM(start)}</div>
+    <div class="plangrip" data-lim="end" data-date="${dayKey}" style="top:${pct(end)}%"
+      title="не планировать позже — потяните">${formatHM(end)}</div>`;
 }
 
 function renderAtRisk(list) {
@@ -1377,7 +1760,11 @@ function createFromText(text) {
   state.lastCreatedId = t.id;      // виновник возможного вытеснения — предлагать двигать его
   // показываем день, куда алгоритм поставил дело (даже если он далеко за краем экрана)
   const placedAt = t.start || (t.chunks || [])[0]?.start;
-  if (placedAt) state.scrollToDate = toDateKey(new Date(placedAt));
+  if (placedAt) {
+    const key = toDateKey(new Date(placedAt));
+    state.scrollToDate = key;                                        // календарь прокрутится
+    state.dayCursor = key === toDateKey(new Date()) ? null : key;    // экран дня — перелистнётся
+  }
   state.view = 'home';
   render();
   setTimeout(() => {
@@ -1598,7 +1985,8 @@ function undoDraftMove() {
 function armedEl() {
   if (!state.armed) return null;
   if (state.armed.kind === 'draft') return document.getElementById('pvdraft');
-  return document.querySelector(`.block[data-item="${state.armed.itemId}"][data-chunk="${state.armed.chunkId || ''}"]`);
+  // блок календаря или карточка экрана одного дня — у них одинаковые data-атрибуты
+  return document.querySelector(`[data-item="${state.armed.itemId}"][data-chunk="${state.armed.chunkId || ''}"]`);
 }
 
 function armedTask() {
@@ -1625,7 +2013,7 @@ function mountPopover() {
   pop.innerHTML = `
     <input type="text" id="bp-title" value="${esc(t.title || '')}" placeholder="Название">
     <div class="bp-when">
-      <button class="bp-cal" id="bp-cal" title="дата: ${pos.dateKey}">📅</button>
+      <button class="bp-cal" id="bp-cal" title="дата: ${pos.dateKey}">${shortDate(pos.dateKey)}</button>
       <input type="date" id="bp-date" value="${pos.dateKey}" class="bp-hidden-date">
       <input type="time" id="bp-start" value="${formatHM(pos.startMin)}" step="300" title="начало">
       <span class="bp-dash">–</span>
@@ -1657,10 +2045,10 @@ function mountPopover() {
         <button data-bp-split="0" title="делать целиком, не дробить">🧱</button>
       </div>
       <button class="bp-date-btn soft ${t.earliest ? '' : 'pale'}" id="bp-earliest-btn"
-        title="${t.earliest ? `не раньше ${t.earliest}` : 'не задано: не раньше какой даты планировать'}">📅<span class="bp-badge">от</span></button>
+        title="${t.earliest ? `не раньше ${t.earliest}` : 'не задано: не раньше какой даты планировать'}"><span class="bp-badge">от</span>${t.earliest ? `<span class="bp-dateval">${shortDate(t.earliest)}</span>` : '📅'}</button>
       <input type="date" id="bp-earliest" value="${t.earliest || ''}" class="bp-hidden-date">
       <button class="bp-date-btn soft ${t.deadline ? '' : 'pale'}" id="bp-deadline-btn"
-        title="${t.deadline ? `дедлайн ${t.deadline}` : 'дедлайн не задан'}">📅<span class="bp-badge">до</span></button>
+        title="${t.deadline ? `дедлайн ${t.deadline}` : 'дедлайн не задан'}"><span class="bp-badge">до</span>${t.deadline ? `<span class="bp-dateval">${shortDate(t.deadline)}</span>` : '📅'}</button>
       <input type="date" id="bp-deadline" value="${t.deadline || ''}" class="bp-hidden-date">
       ${!isDraft && (t.chunks || []).some((c) => c.locked)
     ? '<button class="bp-unpin soft" id="bp-unpin" title="открепить — пусть ставит алгоритм">↻</button>' : ''}
@@ -1673,7 +2061,8 @@ function mountPopover() {
       <button class="bp-ok" id="bp-ok" title="сохранить и закрыть">✓</button>
       <button class="bp-cancel" id="bp-cancel" title="отменить изменения">✕</button>
     </div>`;
-  app.insertBefore(pop, app.querySelector('.calwrap'));   // над календарём, календарь сдвигается вниз
+  // над календарём (или над списком дня) — содержимое сдвигается вниз
+  app.insertBefore(pop, app.querySelector('.calwrap') || app.querySelector('.todaywrap'));
   // Шторка раскрывается сверху вниз (только при открытии — не на каждой пересборке).
   // Дело центрируем после анимации: пока панель растёт, высота календаря ещё меняется.
   if (state.popAnim) {
@@ -2011,12 +2400,45 @@ function render() {
   if (refreshCollision()) persistAndReschedule();
   resyncArmedChunk();
   if (state.view === 'confirm') return renderConfirm();
+  if (dayCountSetting() === 1) return renderToday();
   return renderHome();
+}
+
+/**
+ * Время на экране должно быть живым: линия «сейчас» и часы обновляются сами,
+ * а не только при перерисовке. Возврат к приложению (свернули/разбудили телефон)
+ * тоже обновляет — иначе показывалось время, застывшее на моменте открытия.
+ */
+const NOW_TICK_MS = 20000;
+
+function updateNowMarks() {
+  const now = new Date();
+  if (toDateKey(now) !== state.todayKey) {   // наступили новые сутки — пересобираем экран
+    state.todayKey = toDateKey(now);
+    render();
+    return;
+  }
+  const clock = document.getElementById('th-clock');
+  if (clock) clock.textContent = formatHM(minutesOfDay(now));
+  document.querySelectorAll('.timeline').forEach((tl) => {
+    const line = tl.querySelector('.nowline');
+    if (!line) return;
+    const lo = Number(tl.dataset.lo);
+    const span = Number(tl.dataset.span);
+    line.style.top = `${((minutesOfDay(now) - lo) / span) * 100}%`;
+  });
+}
+
+function startNowTicker() {
+  setInterval(updateNowMarks, NOW_TICK_MS);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) updateNowMarks(); });
+  window.addEventListener('focus', updateNowMarks);
 }
 
 // начальная расстановка (рефлоу прошедшего) и старт
 persistAndReschedule();
 render();
+startNowTicker();
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch(() => {});

@@ -2,8 +2,21 @@
 import { TYPE } from './model.js';
 import { expandOccurrences } from './recurrence.js';
 import {
-  parseHM, startOfDay, addDays, dayAt, diffMinutes, maxDate, minDate, addMinutes,
+  parseHM, startOfDay, addDays, dayAt, diffMinutes, maxDate, minDate, addMinutes, toDateKey,
 } from './time.js';
+
+/**
+ * Окно планирования на конкретный день — «ограничители» сверху и снизу календаря.
+ * По умолчанию общее для всех дней (workStart/workEnd), но у отдельного дня может быть
+ * своё: config.dayWindows['YYYY-MM-DD'] = {start:'HH:MM', end:'HH:MM'}.
+ */
+export function dayWindow(config, day) {
+  const own = (config.dayWindows || {})[toDateKey(day)] || {};
+  return {
+    start: parseHM(own.start || config.workStart),
+    end: parseHM(own.end || config.workEnd),
+  };
+}
 
 /** Собрать занятые интервалы [{start,end}] в [from,to]: fixed-вхождения + чанки. */
 export function busyIntervals(items, from, to) {
@@ -23,12 +36,11 @@ export function busyIntervals(items, from, to) {
 }
 
 /**
- * Свободные слоты в [now .. horizonEnd] внутри рабочих часов.
+ * Свободные слоты в [now .. horizonEnd] внутри окна планирования.
+ * @param {{buffer?:number}} opts buffer — свой отступ вокруг дел (по умолчанию config.bufferMinutes).
  * Возвращает хронологический список [{start:Date, end:Date, minutes:number}].
  */
-export function computeFreeSlots(items, config, now, horizonEnd) {
-  const wStart = parseHM(config.workStart);
-  const wEnd = parseHM(config.workEnd);
+export function computeFreeSlots(items, config, now, horizonEnd, opts = {}) {
   const busy = busyIntervals(items, startOfDay(now), horizonEnd);
 
   const slots = [];
@@ -36,6 +48,7 @@ export function computeFreeSlots(items, config, now, horizonEnd) {
   const lastDay = startOfDay(horizonEnd);
 
   for (; day <= lastDay; day = addDays(day, 1)) {
+    const { start: wStart, end: wEnd } = dayWindow(config, day);
     let winStart = dayAt(day, wStart);
     const winEnd = dayAt(day, wEnd);
     // сегодня: не раньше «сейчас»
@@ -50,7 +63,7 @@ export function computeFreeSlots(items, config, now, horizonEnd) {
 
     // вычитаем занятость -> свободные промежутки, оставляя буфер вокруг каждого дела (D.7):
     // 15 мин после предыдущего дела и 15 мин перед следующим. На краях дня буфер не нужен.
-    const buffer = config.bufferMinutes || 0;
+    const buffer = opts.buffer ?? (config.bufferMinutes || 0);
     let cursor = winStart;
     let cursorIsTask = false; // граница cursor — это конец дела, а не начало рабочего дня?
     for (const b of dayBusy) {

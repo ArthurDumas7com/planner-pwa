@@ -63,10 +63,21 @@ export function overlapsImmovable(startMs, durationMinutes, items, excludeId, co
     now || new Date(), horizonEnd || new Date(Date.now() + 21 * 86400000)).blocked;
 }
 
+/**
+ * Слоты с буферами вокруг дел, а если ничего подходящего нет — впритык.
+ * Отступы в 15 минут — предпочтение, а не запрет: с ними место, которое объективно
+ * есть, иначе выглядело бы занятым.
+ */
+function slotsFitting(durationMinutes, items, config, now, horizonEnd) {
+  const slots = computeFreeSlots(items, config, now, horizonEnd);
+  if (slots.some((s) => s.minutes >= durationMinutes)) return slots;
+  return computeFreeSlots(items, config, now, horizonEnd, { buffer: 0 });
+}
+
 /** Ближайший к желаемому времени свободный старт (ms), куда влезает dur (с учётом буфера). null — нет. */
 export function nearestFreeStart(desiredMs, durationMinutes, items, config, now, horizonEnd, excludeId) {
   const blockers = items.filter((x) => x.id !== excludeId);   // все занятые интервалы, а не только locked
-  const slots = computeFreeSlots(blockers, config, now, horizonEnd);
+  const slots = slotsFitting(durationMinutes, blockers, config, now, horizonEnd);
   let best = null;
   for (const s of slots) {
     const latest = s.end.valueOf() - durationMinutes * 60000;
@@ -142,7 +153,7 @@ export function suggestFreeSlots(durationMinutes, items, config, now, horizonEnd
   // занятыми считаем ВСЕ размещённые дела, а не только закреплённые: иначе предложим
   // место поверх существующего. Места, которые освободятся при сдвиге, подбираются отдельно.
   const blockers = items.filter((x) => x.id !== excludeId);
-  const slots = computeFreeSlots(blockers, config, now, horizonEnd);
+  const slots = slotsFitting(durationMinutes, blockers, config, now, horizonEnd);
   const out = [];
   for (const s of slots) {
     if (s.minutes >= durationMinutes) {

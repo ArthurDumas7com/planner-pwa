@@ -15,8 +15,19 @@ export function saveItems(items) {
 }
 
 export function loadConfig() {
-  try { return { ...DEFAULT_CONFIG, ...(JSON.parse(localStorage.getItem(CONFIG_KEY)) || {}) }; }
+  try { return migrate({ ...DEFAULT_CONFIG, ...(JSON.parse(localStorage.getItem(CONFIG_KEY)) || {}) }); }
   catch { return { ...DEFAULT_CONFIG }; }
+}
+
+/**
+ * Настройки старой версии: один раз показываем новый начальный экран (один день),
+ * дальше выбор пользователя снова уважается.
+ */
+function migrate(config) {
+  if (config.configVersion === DEFAULT_CONFIG.configVersion) return config;
+  const next = { ...config, daysVisible: 1, configVersion: DEFAULT_CONFIG.configVersion };
+  saveConfig(next);
+  return next;
 }
 
 export function saveConfig(config) {

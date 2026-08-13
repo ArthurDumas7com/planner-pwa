@@ -787,3 +787,90 @@ test('scheduler: locked-чанк не двигается при переплан
   assert(still && still.locked, 'locked-чанк сохранён');
   eq(new Date(still.start).getHours(), 15);
 });
+
+// ---------- окно планирования на отдельный день ----------
+test('freeSlots: у отдельного дня своё окно планирования', () => {
+  const own = { ...cfg, bufferMinutes: 0, dayWindows: { '2026-07-22': { start: '12:00', end: '14:00' } } };
+  const slots = computeFreeSlots([], own, new Date(2026, 6, 22, 6, 0), new Date(2026, 6, 22, 23, 59));
+  eq(slots.length, 1, 'ровно одно окно');
+  eq(new Date(slots[0].start).getHours(), 12);
+  eq(slots[0].minutes, 120);
+});
+
+test('scheduler: индивидуальное окно дня ограничивает размещение', () => {
+  const own = { ...cfg, dayWindows: { '2026-07-21': { start: '08:00', end: '09:00' } } };
+  const task = flex({ durationMinMinutes: 120, durationMaxMinutes: 120, importance: 3 });
+  schedule([task], own, NOW);
+  const d = new Date(task.chunks[0].start);
+  assert(toDateKey(d) !== '2026-07-21', 'в укороченный день задача не влезла — уехала дальше');
+});
+
+// ---------- буфер не должен «съедать» реально свободное место ----------
+test('scheduler: дело помещается впритык между событиями, а не «не помещается»', () => {
+  const tight = { ...cfg, workStart: '10:00', workEnd: '13:00' };
+  const a = fixed({ id: 'a', start: new Date(2026, 6, 21, 10, 0).toISOString(), durationMinutes: 60 });
+  const b = fixed({ id: 'b', start: new Date(2026, 6, 21, 12, 0).toISOString(), durationMinutes: 60 });
+  const task = flex({
+    id: 'f', durationMinMinutes: 60, durationMaxMinutes: 60, importance: 3, deadline: '2026-07-21',
+  });
+  schedule([a, b, task], tight, NOW);
+  assert(!task.atRisk, `окно 11:00–12:00 свободно: ${task.atRiskReason || ''}`);
+  eq(new Date(task.chunks[0].start).getHours(), 11);
+});
+
+test('conflicts: варианты переноса находятся и для окна впритык', () => {
+  const tight = { ...cfg, workStart: '10:00', workEnd: '13:00' };
+  const a = fixed({ id: 'a', start: new Date(2026, 6, 21, 10, 0).toISOString(), durationMinutes: 60 });
+  const b = fixed({ id: 'b', start: new Date(2026, 6, 21, 12, 0).toISOString(), durationMinutes: 60 });
+  const slots = suggestFreeSlots(60, [a, b], tight, NOW, new Date(2026, 6, 21, 23, 59), 3);
+  eq(slots.length, 1, 'ровно одно окно — 11:00');
+  eq(new Date(slots[0].start).getHours(), 11);
+});
+
+// ---------- сращивание фрагментов ----------
+test('scheduler: фрагменты одной задачи срастаются, когда место освободилось', () => {
+  const task = flex({ id: 'f', durationMinMinutes: 120, durationMaxMinutes: 120, importance: 3 });
+  task.chunks = [
+    { id: 'c1', start: new Date(2026, 6, 25, 15, 0).toISOString(), durationMinutes: 60, locked: true, status: STATUS.SCHEDULED },
+    { id: 'c2', start: new Date(2026, 6, 25, 18, 0).toISOString(), durationMinutes: 60, locked: true, status: STATUS.SCHEDULED },
+  ];
+  schedule([task], cfg, NOW);
+  eq(task.chunks.length, 1, 'остался один кусок');
+  eq(task.chunks[0].durationMinutes, 120, 'суммарная длительность сохранена');
+  eq(new Date(task.chunks[0].start).getHours(), 15, 'сросся на месте закреплённого куска');
+});
+
+test('scheduler: фрагменты не срастаются, если место всё ещё занято', () => {
+  const wall = fixed({ id: 'w', start: new Date(2026, 6, 25, 16, 0).toISOString(), durationMinutes: 120 });
+  const task = flex({ id: 'f', durationMinMinutes: 120, durationMaxMinutes: 120, importance: 3 });
+  task.chunks = [
+    { id: 'c1', start: new Date(2026, 6, 25, 14, 0).toISOString(), durationMinutes: 60, locked: true, status: STATUS.SCHEDULED },
+    { id: 'c2', start: new Date(2026, 6, 25, 18, 30).toISOString(), durationMinutes: 60, locked: true, status: STATUS.SCHEDULED },
+  ];
+  schedule([wall, task], cfg, NOW);
+  eq(task.chunks.length, 2, 'разрезано событием — оставляем как есть');
+});
+
+test('scheduler: соседние куски встык склеиваются', () => {
+  const task = flex({ id: 'f', durationMinMinutes: 90, durationMaxMinutes: 90, importance: 3 });
+  task.chunks = [
+    { id: 'c1', start: new Date(2026, 6, 25, 9, 0).toISOString(), durationMinutes: 45, locked: true, status: STATUS.SCHEDULED },
+    { id: 'c2', start: new Date(2026, 6, 25, 9, 45).toISOString(), durationMinutes: 45, locked: true, status: STATUS.SCHEDULED },
+  ];
+  schedule([task], cfg, NOW);
+  eq(task.chunks.length, 1);
+  eq(task.chunks[0].durationMinutes, 90);
+  eq(new Date(task.chunks[0].start).getHours(), 9);
+});
+
+test('scheduler: прошедший фрагмент не переносится сращиванием', () => {
+  const now = new Date(2026, 6, 21, 16, 0);
+  const task = flex({ id: 'f', durationMinMinutes: 120, durationMaxMinutes: 120, importance: 3 });
+  task.chunks = [
+    { id: 'c1', start: new Date(2026, 6, 21, 9, 0).toISOString(), durationMinutes: 60, locked: true, status: STATUS.SCHEDULED },
+    { id: 'c2', start: new Date(2026, 6, 21, 18, 0).toISOString(), durationMinutes: 60, locked: true, status: STATUS.SCHEDULED },
+  ];
+  schedule([task], cfg, now);
+  eq(task.chunks.length, 2, 'прожитый кусок остаётся на своём месте');
+  eq(new Date(task.chunks[0].start).getHours(), 9);
+});
