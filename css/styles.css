@@ -8,7 +8,7 @@
   --line: #e6ebf7;
   --accent: #1b4dff;
   --accent-soft: rgba(27,77,255,.10);
-  --grid: #ccd7f5;            /* крестики на пересечениях сетки */
+  --grid: #4f74ff;            /* звёздочки на пересечениях сетки (тот же цвет в --cross) */
 
   --strategic: #23a97f;             /* зелёный — стратегия */
   --strategic-soft: #e3f6ef;
@@ -20,8 +20,10 @@
   --low: #d99b1a;
   --radius: 18px;
 
-  /* метка сетки календаря: четырёхлучевая звёздочка на пересечении часа и границы дня */
-  --cross: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' preserveAspectRatio='xMidYMid meet'%3E%3Cpath d='M8 3.4 Q9.3 6.7 12.6 8 Q9.3 9.3 8 12.6 Q6.7 9.3 3.4 8 Q6.7 6.7 8 3.4 Z' fill='%23ccd7f5'/%3E%3C/svg%3E");
+  /* метка сетки календаря: четырёхлучевая звёздочка на пересечении часа и границы дня.
+     Цвет внутри картинки задаётся явно (переменные в data-URI не подставляются) —
+     менять вместе с --grid. */
+  --cross: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' preserveAspectRatio='xMidYMid meet'%3E%3Cpath d='M8 3.4 Q9.3 6.7 12.6 8 Q9.3 9.3 8 12.6 Q6.7 9.3 3.4 8 Q6.7 6.7 8 3.4 Z' fill='%234f74ff'/%3E%3C/svg%3E");
 }
 
 * { box-sizing: border-box; }
