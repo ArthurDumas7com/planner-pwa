@@ -1122,8 +1122,10 @@ function startDragGeneric(e, mode, key) {
   // а браузер не перехватит жест под прокрутку календаря
   try { e.target.setPointerCapture?.(e.pointerId); } catch { /* не критично */ }
   const tgt = targetFor(key);
-  const wStart = parseHM(state.config.workStart);
-  const wEnd = parseHM(state.config.workEnd);
+  // Руками дело можно поставить в любое время суток, в том числе вне окна планирования:
+  // окно запрещает ставить туда автоматически, а не пользователю (D.4.2).
+  const DAY_MIN = 0;
+  const DAY_MAX = 24 * 60;
   const g = pointerToDayMinute(e);
   const p0 = tgt.get();
   const grabOffset = g ? g.minute - p0.startMin : 0;
@@ -1142,13 +1144,13 @@ function startDragGeneric(e, mode, key) {
     const p = tgt.get();
     if (mode === 'move') {
       p.dateKey = pos.dateKey;
-      p.startMin = clampN(snap5(pos.minute - grabOffset), wStart, wEnd - p.durationMinutes);
+      p.startMin = clampN(snap5(pos.minute - grabOffset), DAY_MIN, DAY_MAX - p.durationMinutes);
     } else if (mode === 'top') {
       const end = p.startMin + p.durationMinutes;
-      const ns = clampN(snap5(pos.minute), wStart, end - PV_MIN_DUR);
+      const ns = clampN(snap5(pos.minute), DAY_MIN, end - PV_MIN_DUR);
       p.startMin = ns; p.durationMinutes = end - ns;
     } else {
-      const ne = clampN(snap5(pos.minute), p.startMin + PV_MIN_DUR, wEnd);
+      const ne = clampN(snap5(pos.minute), p.startMin + PV_MIN_DUR, DAY_MAX);
       p.durationMinutes = ne - p.startMin;
     }
     tgt.set(p);
