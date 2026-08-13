@@ -213,6 +213,14 @@ function wireTopRow() {
   document.getElementById('fab').onclick = openAdd;
   app.querySelectorAll('[data-days]').forEach((b) => {
     b.onclick = () => {
+      // колонки меняют ширину — держимся за тот же день, а не за пиксели прокрутки
+      const sc = document.getElementById('daysScroll');
+      if (sc) {
+        const left = sc.getBoundingClientRect().left;
+        const col = [...sc.querySelectorAll('.timeline')]
+          .find((t) => t.getBoundingClientRect().right > left + 1);
+        if (col) state.scrollToDate = col.dataset.date;
+      }
       state.config = { ...state.config, daysVisible: Number(b.getAttribute('data-days')) };
       saveConfig(state.config);
       state.armed = null;
@@ -497,7 +505,6 @@ function renderHome() {
     };
   });
   document.getElementById('focus-cancel')?.addEventListener('click', () => { state.yieldFocus = null; render(); });
-  wirePlanLimits();
 
   app.querySelectorAll('.block[data-item]').forEach((el) => {
     // дело с ↦: первый клик — показать варианты для него; если оно уже выбрано,
@@ -696,7 +703,7 @@ function goToDay(day) {
 }
 
 // ---------- ограничители окна планирования ----------
-const LIMIT_SNAP = 15;       // ручки встают по четвертям часа
+const LIMIT_SNAP = 15;       // границы окна встают по четвертям часа
 const LIMIT_MIN_WINDOW = 60; // окно не уже часа
 
 /** Записать окно планирования: общее для всех дней или своё у одного дня. */
@@ -722,40 +729,6 @@ function clearDayWindow(dateKey) {
   saveConfig(state.config);
 }
 
-/**
- * Перетаскивание ручки. По умолчанию двигает границу сразу для всех дней;
- * если у дня уже есть своё окно — двигает только его (чтобы не сбить остальные).
- */
-function wirePlanLimits() {
-  app.querySelectorAll('.plangrip').forEach((grip) => {
-    grip.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      try { grip.setPointerCapture?.(e.pointerId); } catch { /* не критично */ }
-      const edge = grip.dataset.lim;
-      const dateKey = grip.dataset.date;
-      const perDay = !!(state.config.dayWindows || {})[dateKey];
-      let moved = false;
-      const move = (ev) => {
-        const pos = pointerToDayMinute(ev);
-        if (!pos) return;
-        if (!moved) { moved = true; snapshot(); }
-        setPlanWindow(perDay ? dateKey : null, edge, pos.minute);
-        renderHome();
-      };
-      const up = () => {
-        document.removeEventListener('pointermove', move);
-        document.removeEventListener('pointerup', up);
-        if (!moved) return;
-        persistAndReschedule();
-        render();
-      };
-      document.addEventListener('pointermove', move);
-      document.addEventListener('pointerup', up);
-    });
-  });
-}
-
 // ---------- меню «⋯»: окно планирования ----------
 function mountMenu() {
   document.getElementById('menupop')?.remove();
@@ -773,7 +746,7 @@ function mountMenu() {
   pop.innerHTML = `
     <div class="mn-title">Окно планирования</div>
     <div class="mn-sub">Дела без привязки ко времени алгоритм ставит только внутри него.
-      Границы можно тянуть прямо на календаре.</div>
+      На календаре время вне окна заштриховано.</div>
     <div class="seg mn-scope">
       <button class="${m.dateKey ? '' : 'on'}" data-scope="all">все дни</button>
       <button class="${m.dateKey ? 'on' : ''}" data-scope="one">отдельный день</button>
@@ -1181,8 +1154,9 @@ function startDragGeneric(e, mode, key) {
 function setupDayScroll(dayCount) {
   const sc = document.getElementById('daysScroll');
   if (!sc) return;
-  const scaleW = document.querySelector('.tscale')?.offsetWidth || 40;
-  const w = (sc.clientWidth - scaleW) / dayCount;      // шкала слева занимает свою полосу
+  // ширина прокручиваемой области уже без шкалы слева (она — соседняя колонка flex),
+  // поэтому делим её как есть: ровно N дней в экран, без обрезка справа
+  const w = sc.clientWidth / dayCount;
   sc.style.setProperty('--daywidth', `${w}px`);
   const step = w;
 
@@ -1353,23 +1327,19 @@ function renderDayColumn(day, now, markers = [], lo, span) {
 }
 
 /**
- * Ограничители окна планирования: затемнение вне окна и две «ручки» на границах.
+ * Ограничители окна планирования: вне окна — штриховка, на границе — тонкая линия.
+ * Больше ничего рисовать не нужно: часы и так подписаны на шкале слева.
  * Внутрь окна алгоритм ставит дела без привязки ко времени; события «ко времени»
- * можно ставить где угодно — окно им не запрет.
+ * можно ставить где угодно — окно им не запрет. Двигают окно из меню «⋯».
  */
 function planLimitsHtml(day, lo, span) {
   const { start, end } = dayWindow(state.config, day);
   const pct = (m) => ((m - lo) / span) * 100;
-  const dayKey = toDateKey(day);
   return `
-    <div class="planoff top" style="height:${pct(start)}%"></div>
-    <div class="planoff bottom" style="top:${pct(end)}%"></div>
+    <div class="planoff top" style="height:${pct(start)}%" title="раньше ${formatHM(start)} не планируем"></div>
+    <div class="planoff bottom" style="top:${pct(end)}%" title="позже ${formatHM(end)} не планируем"></div>
     <div class="planline" style="top:${pct(start)}%"></div>
-    <div class="planline" style="top:${pct(end)}%"></div>
-    <div class="plangrip" data-lim="start" data-date="${dayKey}" style="top:${pct(start)}%"
-      title="не планировать раньше ${formatHM(start)} — потяните"></div>
-    <div class="plangrip" data-lim="end" data-date="${dayKey}" style="top:${pct(end)}%"
-      title="не планировать позже ${formatHM(end)} — потяните"></div>`;
+    <div class="planline" style="top:${pct(end)}%"></div>`;
 }
 
 function renderAtRisk(list) {

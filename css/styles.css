@@ -116,11 +116,6 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 .planoff.bottom { bottom: 0; }
 .planline { position: absolute; left: 0; right: 0; height: 0; z-index: 1; pointer-events: none;
   border-top: 1.5px dashed rgba(27,77,255,.40); }
-/* ручка без подписи: до какого часа идёт запрет, видно по штриховке */
-.plangrip { position: absolute; left: 3px; z-index: 6; transform: translateY(-50%);
-  width: 20px; height: 5px; border-radius: 999px; cursor: ns-resize; touch-action: none;
-  background: var(--accent); opacity: .7; }
-.plangrip:hover { opacity: 1; }
 
 /* цвет = категория дела; заливка = привязано ко времени или нет */
 .cat-work { --cat: var(--c-work); --cat-a: var(--c-work-a); }
