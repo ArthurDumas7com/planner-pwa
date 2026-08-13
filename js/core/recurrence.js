@@ -1,6 +1,6 @@
 // Разворачивание повторяющихся fixed-событий в конкретные вхождения.
 import { TYPE } from './model.js';
-import { startOfDay, addDays, dayAt, minutesOfDay, fromDateKey } from './time.js';
+import { startOfDay, addDays, dayAt, minutesOfDay, fromDateKey, toDateKey } from './time.js';
 
 const MAX_STEPS = 4000;   // защита от бесконечного цикла на «повторять вечно»
 
@@ -83,6 +83,8 @@ function* occurrenceDays(rec, baseDay, limit) {
 
 /**
  * Вернуть вхождения fixed-события в интервале [from, to] как [{start:Date, durationMinutes}].
+ * Дни из item.exdates пропускаются — это вхождения, вырванные из цикла (стали отдельным
+ * событием) или удалённые поштучно.
  * Для flexible-задач повторяемость в v1 в ядре не разворачивается (см. ТЗ, раздел D).
  */
 export function expandOccurrences(item, from, to) {
@@ -90,9 +92,11 @@ export function expandOccurrences(item, from, to) {
   const base = new Date(item.start);
   const dur = item.durationMinutes || 0;
   const rec = normalizeRecurrence(item.recurrence);
+  const skip = new Set(item.exdates || []);
 
   if (!rec) {
-    return (base >= from && base <= to) ? [{ start: base, durationMinutes: dur }] : [];
+    return (base >= from && base <= to && !skip.has(toDateKey(base)))
+      ? [{ start: base, durationMinutes: dur }] : [];
   }
 
   const tod = minutesOfDay(base);           // время суток базового вхождения
@@ -108,6 +112,7 @@ export function expandOccurrences(item, from, to) {
   for (const day of occurrenceDays(rec, startOfDay(base), limit)) {
     seen += 1;
     if (rec.count && seen > rec.count) break;   // «после N повторений»
+    if (skip.has(toDateKey(day))) continue;     // день вырван из цикла
     const start = dayAt(day, tod);
     if (start >= from && start <= to) out.push({ start, durationMinutes: dur });
   }

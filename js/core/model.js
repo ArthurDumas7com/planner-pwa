@@ -70,6 +70,8 @@ export function makeTask(p = {}) {
     // повторяемость: null | {everyDays:n} | {weekdays:[0..6]}; необязательное поле until —
     // дата окончания повтора (многодневные периоды: отпуск, поездка)
     recurrence: p.recurrence || null,
+    exdates: p.exdates || [],      // дни, вырванные из цикла повторения ('YYYY-MM-DD')
+    doneDates: p.doneDates || [],  // дни, отмеченные сделанными поштучно (весь цикл — status)
     allDay: p.allDay || false,     // занимает день целиком
 
     // вывод планировщика: [{id,start(ISO),durationMinutes,locked,status}]

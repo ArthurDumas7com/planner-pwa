@@ -1,6 +1,6 @@
 // Контроллер приложения (buildless SPA). Использует ядро из ./core/*.
 import {
-  TYPE, NATURE, STATUS, CATEGORIES, makeTask, targetDuration, newId,
+  TYPE, STATUS, CATEGORIES, makeTask, targetDuration, newId,
 } from './core/model.js';
 import { parseTask } from './core/parser.js';
 import { WEEKDAYS, WEEKDAY_ABBR } from './core/dict.js';
@@ -21,7 +21,6 @@ const PV_MIN_DUR = 15;   // минимальная длительность пр
 const CAT_LABELS = {
   work: 'Работа', own_business: 'Свой бизнес', personal_brand: 'Личный бренд', personal: 'Личное',
 };
-const NATURE_LABELS = { strategic: 'Стратегическая', tactical: 'Тактическая' };
 
 const state = {
   items: loadItems(),
@@ -47,7 +46,10 @@ function sameArm(a, b) {
   if (!a || !b) return false;
   if (a.kind !== b.kind) return false;
   if (a.kind === 'draft') return true;
-  return a.itemId === b.itemId && (a.chunkId || null) === (b.chunkId || null);
+  // occDate различает вхождения повторяющегося события: галочка ставится ровно тому дню,
+  // по которому открыли шторку
+  return a.itemId === b.itemId && (a.chunkId || null) === (b.chunkId || null)
+    && (a.occDate || null) === (b.occDate || null);
 }
 function isArmed(key) { return sameArm(state.armed, key); }
 function arm(key) {
@@ -305,13 +307,14 @@ function mkBlock(item, startDate, durationMinutes, chunkId) {
   const yieldIds = state.yieldIds || new Set();
   const endMs = startDate.valueOf() + durationMinutes * 60000;
   return {
-    done: item.status === STATUS.DONE,
+    // сделанным может быть как всё дело, так и один день повторяющегося события
+    done: item.status === STATUS.DONE || (item.doneDates || []).includes(toDateKey(startDate)),
     past: endMs < Date.now(),          // прошедшее дело (в шторке доступны ✅ и ↷)
     itemId: item.id, chunkId: chunkId || null,
     conflictWith: item.conflict ? item.conflict.withTitle : null,
     movedCount: item.movedCount || 0,
     yielding: yieldIds.has(item.id),
-    title: item.title, nature: item.nature, type: item.type,
+    title: item.title, nature: item.nature, type: item.type, category: item.category,
     startMin, endMin: startMin + durationMinutes, durationMinutes,
     atRisk: item.atRisk, conflict: !!item.conflict,
     recurring: !!item.recurrence,   // повторяющиеся не переносим поштучно
@@ -507,7 +510,9 @@ function renderHome() {
       };
       return;
     }
-    attachArm(el, { kind: 'item', itemId: el.dataset.item, chunkId: el.dataset.chunk || null });
+    attachArm(el, {
+      kind: 'item', itemId: el.dataset.item, chunkId: el.dataset.chunk || null, occDate: el.dataset.occ,
+    });
   });
   mountPopover();
   mountRepeatPanel();
@@ -543,17 +548,17 @@ function todayCardHtml(b, now) {
   const running = !b.done && b.startMin <= minutesOfDay(now) && b.endMin > minutesOfDay(now)
     && b.dateKey === toDateKey(now);
   const cls = [
-    b.nature, b.done ? 'done' : '', b.unplaced ? 'unplaced' : '',
+    `cat-${b.category}`, b.done ? 'done' : '', b.unplaced ? 'unplaced' : '',
     b.atRisk ? 'risk' : '', running ? 'running' : '',
     b.itemId === state.highlightId ? 'justadded' : '',
     b.type === TYPE.FIXED ? 'fixed' : 'flex',
   ].filter(Boolean).join(' ');
   return `<div class="tcard ${cls}" data-item="${b.itemId}" data-chunk="${b.chunkId || ''}"
-      ${b.unplaced ? 'data-unplaced="1"' : ''}>
+      data-occ="${b.dateKey}" ${b.unplaced ? 'data-unplaced="1"' : ''}>
       <div class="tc-head">
-        <div class="tc-title">${esc(b.title)}</div>
+        <div class="tc-title">${esc(b.title)}${b.recurring ? '<span class="tc-rep" title="повторяющееся">↻</span>' : ''}</div>
         <div class="tc-acts">
-          <button class="tc-btn ok" data-done="${b.itemId}" title="сделано">✓</button>
+          <button class="tc-btn ok" data-done="${b.itemId}" data-occ="${b.dateKey}" title="сделано">✓</button>
           <button class="tc-btn mv" data-moveitem="${b.itemId}" title="перенести">↷</button>
         </div>
       </div>
@@ -651,7 +656,7 @@ function renderToday() {
   document.getElementById('focus-cancel')?.addEventListener('click', () => { state.yieldFocus = null; render(); });
 
   app.querySelectorAll('[data-done]').forEach((b) => {
-    b.onclick = (e) => { e.stopPropagation(); state.armed = null; markDone(b.dataset.done); };
+    b.onclick = (e) => { e.stopPropagation(); state.armed = null; markDone(b.dataset.done, b.dataset.occ); };
   });
   app.querySelectorAll('[data-moveitem]').forEach((b) => {
     b.onclick = (e) => { e.stopPropagation(); state.armed = null; movePastItem(b.dataset.moveitem); };
@@ -667,7 +672,9 @@ function renderToday() {
       if (e.target.closest('button')) return;
       // не размещённому делу править нечего — сразу предлагаем выбрать место
       if (card.dataset.unplaced) { state.yieldFocus = card.dataset.item; render(); return; }
-      arm({ kind: 'item', itemId: card.dataset.item, chunkId: card.dataset.chunk || null });
+      arm({
+        kind: 'item', itemId: card.dataset.item, chunkId: card.dataset.chunk || null, occDate: card.dataset.occ,
+      });
     };
   });
 
@@ -1290,17 +1297,19 @@ function renderDayColumn(day, now, markers = [], lo, span) {
   const nowLine = isToday && minutesOfDay(now) >= lo && minutesOfDay(now) <= lo + span
     ? `<div class="nowline" style="top:${((minutesOfDay(now) - lo) / span) * 100}%"></div>` : '';
 
-  let strat = 0; let tact = 0;
-  for (const b of blocks) { if (b.nature === NATURE.STRATEGIC) strat += b.durationMinutes; else tact += b.durationMinutes; }
-  const totalPlanned = strat + tact;
+  // полоска-итог по дню: сколько времени какой сфере, теми же цветами, что и дела
+  const byCat = new Map();
+  for (const b of blocks) byCat.set(b.category, (byCat.get(b.category) || 0) + b.durationMinutes);
+  const totalPlanned = [...byCat.values()].reduce((s, m) => s + m, 0);
   const bar = totalPlanned
-    ? `<div class="daybar"><span class="strategic" style="width:${(strat / totalPlanned) * 100}%"></span><span class="tactical" style="width:${(tact / totalPlanned) * 100}%"></span></div>`
+    ? `<div class="daybar">${CATEGORIES.filter((c) => byCat.get(c))
+      .map((c) => `<span class="cat-${c}" style="width:${(byCat.get(c) / totalPlanned) * 100}%"></span>`).join('')}</div>`
     : '<div class="daybar empty"></div>';
 
   const blockEls = blocks.map((b) => {
     const top = ((b.startMin - lo) / span) * 100;
     const height = Math.max(2.5, ((b.endMin - b.startMin) / span) * 100);
-    const key = { kind: 'item', itemId: b.itemId, chunkId: b.chunkId };
+    const key = { kind: 'item', itemId: b.itemId, chunkId: b.chunkId, occDate: b.dateKey };
     const on = isArmed(key);
     const dragging = state.dragState && sameArm(state.dragState.key, key);
     const handles = on && !b.recurring
@@ -1314,8 +1323,8 @@ function renderDayColumn(day, now, markers = [], lo, span) {
     const unplaced = b.unplaced ? ' unplaced' : '';
     // «сделано» и «перенести» живут в шторке события (открывается тапом), а не на блоке
     const pastBtns = '';
-    return `<div class="block ${b.nature} ${b.type === TYPE.FIXED ? 'fixed' : 'flex'} ${b.atRisk ? 'risk' : ''} ${b.conflict ? 'conflict' : ''} ${on ? 'armed' : ''}${yields}${fresh}${unplaced}${b.done ? ' done' : ''} ${dragging && state.dragState.invalid ? 'invalid' : ''} ${dragging && state.dragState.moving ? 'dragging' : ''}"
-      data-item="${b.itemId}" data-chunk="${b.chunkId || ''}" data-recurring="${b.recurring ? '1' : ''}"
+    return `<div class="block cat-${b.category} ${b.type === TYPE.FIXED ? 'fixed' : 'flex'} ${b.atRisk ? 'risk' : ''} ${b.conflict ? 'conflict' : ''} ${on ? 'armed' : ''}${yields}${fresh}${unplaced}${b.done ? ' done' : ''} ${dragging && state.dragState.invalid ? 'invalid' : ''} ${dragging && state.dragState.moving ? 'dragging' : ''}"
+      data-item="${b.itemId}" data-chunk="${b.chunkId || ''}" data-occ="${b.dateKey}" data-recurring="${b.recurring ? '1' : ''}"
       ${(b.yielding || b.unplaced) ? `data-yield="${b.itemId}"` : ''}
       style="top:${top}%;height:${height}%;${laneStyle(b)}" title="${esc(b.title)}">
       ${handles}${warn}${pastBtns}${b.movedCount ? `<span class="bmoved" title="переносилось раз: ${b.movedCount}">↻</span>` : ''}
@@ -1358,9 +1367,9 @@ function planLimitsHtml(day, lo, span) {
     <div class="planline" style="top:${pct(start)}%"></div>
     <div class="planline" style="top:${pct(end)}%"></div>
     <div class="plangrip" data-lim="start" data-date="${dayKey}" style="top:${pct(start)}%"
-      title="не планировать раньше — потяните">${formatHM(start)}</div>
+      title="не планировать раньше ${formatHM(start)} — потяните"></div>
     <div class="plangrip" data-lim="end" data-date="${dayKey}" style="top:${pct(end)}%"
-      title="не планировать позже — потяните">${formatHM(end)}</div>`;
+      title="не планировать позже ${formatHM(end)} — потяните"></div>`;
 }
 
 function renderAtRisk(list) {
@@ -1559,9 +1568,51 @@ function reclaimFreedTime() {
   }
 }
 
-function markDone(id) {
+/**
+ * Отметить сделанным. У повторяющегося события галочка закрывает ТОЛЬКО тот день,
+ * по которому её нажали, — весь цикл остаётся жить дальше (остальные правки, наоборот,
+ * применяются ко всему циклу).
+ */
+function markDone(id, occDate) {
   const t = state.items.find((x) => x.id === id);
-  if (t) { snapshot(); t.status = STATUS.DONE; reclaimFreedTime(); persistAndReschedule(); render(); }
+  if (!t) return;
+  snapshot();
+  if (t.recurrence && occDate) {
+    t.doneDates = [...new Set([...(t.doneDates || []), occDate])];
+  } else {
+    t.status = STATUS.DONE;
+  }
+  reclaimFreedTime(); persistAndReschedule(); render();
+}
+
+/**
+ * Вырвать один день из цикла повторения: этот день становится отдельным событием,
+ * а из цикла исключается. Дальше его можно править и двигать, не трогая остальные.
+ */
+function detachOccurrence(itemId, occDate) {
+  const t = state.items.find((x) => x.id === itemId);
+  if (!t || !t.recurrence || !occDate) return;
+  snapshot();
+  const base = new Date(t.start);
+  const start = dayAt(fromDateKey(occDate), minutesOfDay(base));
+  const solo = makeTask({
+    ...t,
+    id: newId('t'),
+    recurrence: null,
+    exdates: [],
+    doneDates: (t.doneDates || []).includes(occDate) ? [occDate] : [],
+    start: start.toISOString(),
+    createdAt: new Date().toISOString(),
+  });
+  t.exdates = [...new Set([...(t.exdates || []), occDate])];
+  t.doneDates = (t.doneDates || []).filter((d) => d !== occDate);
+  state.items.push(solo);
+  state.armed = { kind: 'item', itemId: solo.id, chunkId: null, occDate };
+  state.highlightId = solo.id;
+  persistAndReschedule(); render();
+  setTimeout(() => {
+    if (state.highlightId === solo.id) { state.highlightId = null; render(); }
+  }, HIGHLIGHT_MS);
 }
 
 // ---------- добавление: ввод текста ----------
@@ -1843,7 +1894,7 @@ function wcColHtml(day, idx, count) {
     const top = Math.max(0, (b.startMin - wStart) * PV_PX);
     const h = Math.max(4, b.durationMinutes * PV_PX);
     const canYield = yieldSet.has(b.itemId);
-    return `<div class="pvblock ctx ${b.nature} ${b.type === TYPE.FIXED ? 'fixed' : 'flex'} ${canYield ? 'yielding' : ''}"
+    return `<div class="pvblock ctx cat-${b.category} ${b.type === TYPE.FIXED ? 'fixed' : 'flex'} ${canYield ? 'yielding' : ''}"
       data-item="${b.itemId}" ${canYield ? `data-yield="${b.itemId}"` : ''}
       style="top:${top}px;height:${h}px;${laneStyle(b)}">
       <span class="pvb-label">${esc(b.title)}</span></div>`;
@@ -1866,7 +1917,7 @@ function wcColHtml(day, idx, count) {
     const inval = (dragging && state.dragState.invalid) || P.invalid;
     const names0 = (state.draft.blockedBy || []).map((b) => `«${b.title}»`).join(', ');
     const handles = on ? '<div class="pv-handle top"></div><div class="pv-handle bottom"></div>' : '';
-    draftEl = `<div id="pvdraft" class="pvblock draft ${t.nature} ${t.type === TYPE.FIXED ? 'fixed' : 'flex'} ${inval ? 'invalid' : ''} ${dragging && state.dragState.moving ? 'dragging' : ''} ${on ? 'armed' : ''}"
+    draftEl = `<div id="pvdraft" class="pvblock draft cat-${t.category} ${t.type === TYPE.FIXED ? 'fixed' : 'flex'} ${inval ? 'invalid' : ''} ${dragging && state.dragState.moving ? 'dragging' : ''} ${on ? 'armed' : ''}"
       style="top:${(P.startMin - wStart) * PV_PX}px;height:${P.durationMinutes * PV_PX}px;${laneStyle(draftPseudo || {})}">
       ${handles}
       ${inval ? `<span class="bwarn" title="${esc(names0 || 'место занято')}">⚠</span>` : ''}
@@ -1986,7 +2037,8 @@ function armedEl() {
   if (!state.armed) return null;
   if (state.armed.kind === 'draft') return document.getElementById('pvdraft');
   // блок календаря или карточка экрана одного дня — у них одинаковые data-атрибуты
-  return document.querySelector(`[data-item="${state.armed.itemId}"][data-chunk="${state.armed.chunkId || ''}"]`);
+  const occ = state.armed.occDate ? `[data-occ="${state.armed.occDate}"]` : '';
+  return document.querySelector(`[data-item="${state.armed.itemId}"][data-chunk="${state.armed.chunkId || ''}"]${occ}`);
 }
 
 function armedTask() {
@@ -2003,9 +2055,13 @@ function mountPopover() {
   const pos = isDraft ? state.draft.proposed : targetFor(state.armed).get();
   const isFixed = t.type === TYPE.FIXED;
   const endMin = pos.startMin + pos.durationMinutes;
+  // у повторяющегося события шторка открыта по конкретному дню: галочка и «вырвать
+  // из цикла» относятся именно к нему, всё остальное — ко всему циклу
+  const occDate = (!isDraft && t.recurrence && state.armed.occDate) ? state.armed.occDate : null;
+  const occDone = occDate && (t.doneDates || []).includes(occDate);
   // дело уже идёт или прошло — прямо здесь можно отметить «сделано» или перенести
-  const started = !isDraft && t.status !== STATUS.DONE
-    && dayAt(fromDateKey(pos.dateKey), pos.startMin).valueOf() <= Date.now();
+  const started = !isDraft && t.status !== STATUS.DONE && !occDone
+    && dayAt(fromDateKey(occDate || pos.dateKey), pos.startMin).valueOf() <= Date.now();
 
   const pop = document.createElement('div');
   pop.id = 'blockpop';
@@ -2023,12 +2079,12 @@ function mountPopover() {
         title="${recurrenceLabel(t.recurrence)}">повторение</button>` : ''}
       <button class="bp-ai" id="bp-ai" title="перенести текстом">✨</button>
     </div>
+    ${occDate ? `<div class="bp-occrow">
+      <button class="bp-detach" id="bp-detach"
+        title="вырвать ${shortDate(occDate)} из цикла — дальше править отдельно">только ${shortDate(occDate)}</button>
+      <span class="bp-note">правки — на весь цикл, ✅ — только этот день</span>
+    </div>` : ''}
     <div class="bp-row">
-      <div class="seg slider" data-seg="nature" data-pos="${t.nature === NATURE.STRATEGIC ? 0 : 1}">
-        <span class="seg-thumb"></span>
-        <button data-bp-nature="strategic" title="стратегическая — вклад в будущее">📈</button>
-        <button data-bp-nature="tactical" title="тактическая — текущие дела">⏩</button>
-      </div>
       <div class="seg slider soft" data-seg="type" data-pos="${isFixed ? 0 : 1}">
         <span class="seg-thumb"></span>
         <button data-bp-type="fixed" title="привязано ко времени">🔒</button>
@@ -2116,9 +2172,6 @@ function wirePopover() {
   const after = () => { if (isDraft) { rebuildWeek(); mountPopover(); } else { persistAndReschedule(); render(); } };
   const beforeChange = () => { if (!isDraft) snapshot(); };
 
-  document.querySelectorAll('#blockpop [data-bp-nature]').forEach((b) => {
-    b.onclick = () => { beforeChange(); t.nature = b.getAttribute('data-bp-nature'); if (isDraft) state.draft.confidence.nature = 'ok'; after(); };
-  });
   document.querySelectorAll('#blockpop [data-bp-type]').forEach((b) => {
     b.onclick = () => {
       const next = b.getAttribute('data-bp-type');
@@ -2213,9 +2266,17 @@ function wirePopover() {
   const dlBtn = document.getElementById('bp-deadline-btn');
   if (dlBtn) dlBtn.onclick = () => openPicker(dl);
 
+  // «вырвать из цикла»: этот день станет отдельным событием
+  const detachBtn = document.getElementById('bp-detach');
+  if (detachBtn) detachBtn.onclick = () => detachOccurrence(state.armed.itemId, state.armed.occDate);
+
   // «сделано» и «перенести» для дела, которое уже идёт или прошло
   const doneBtn = document.getElementById('bp-done');
-  if (doneBtn) doneBtn.onclick = () => { const id = state.armed.itemId; state.armed = null; markDone(id); };
+  if (doneBtn) doneBtn.onclick = () => {
+    const { itemId, occDate } = state.armed;
+    state.armed = null;
+    markDone(itemId, occDate);
+  };
   const moveBtn = document.getElementById('bp-move');
   if (moveBtn) moveBtn.onclick = () => { const id = state.armed.itemId; state.armed = null; movePastItem(id); };
   const unpin = document.getElementById('bp-unpin');

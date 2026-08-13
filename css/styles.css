@@ -10,9 +10,15 @@
   --accent-soft: rgba(27,77,255,.10);
   --grid: #4f74ff;            /* звёздочки на пересечениях сетки (тот же цвет в --cross) */
 
-  --strategic: #23a97f;             /* зелёный — стратегия */
-  --strategic-soft: #e3f6ef;
-  --tactical: #e08a3c;              /* тёплый песочный — тактика */
+  /* цвет дела = его категория (четыре сферы) */
+  --c-work: #3b6cff;                --c-work-a: rgba(59,108,255,.16);
+  --c-own_business: #12a37a;        --c-own_business-a: rgba(18,163,122,.16);
+  --c-personal_brand: #9a4dea;      --c-personal_brand-a: rgba(154,77,234,.16);
+  --c-personal: #ef8b28;            --c-personal-a: rgba(239,139,40,.16);
+
+  --strategic: #23a97f;             /* стратегия/тактика цветом больше не показываются, */
+  --strategic-soft: #e3f6ef;        /* но остаются в ядре: планировщик защищает долю стратегии */
+  --tactical: #e08a3c;
   --tactical-soft: #fdefdd;
 
   --risk: #e3455b;
@@ -23,7 +29,7 @@
   /* метка сетки календаря: четырёхлучевая звёздочка на пересечении часа и границы дня.
      Цвет внутри картинки задаётся явно (переменные в data-URI не подставляются) —
      менять вместе с --grid. */
-  --cross: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' preserveAspectRatio='xMidYMid meet'%3E%3Cpath d='M8 3.4 Q9.3 6.7 12.6 8 Q9.3 9.3 8 12.6 Q6.7 9.3 3.4 8 Q6.7 6.7 8 3.4 Z' fill='%234f74ff'/%3E%3C/svg%3E");
+  --cross: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' preserveAspectRatio='xMidYMid meet'%3E%3Cpath d='M8 1.4 Q8.85 7.15 14.6 8 Q8.85 8.85 8 14.6 Q7.15 8.85 1.4 8 Q7.15 7.15 8 1.4 Z' fill='%234f74ff'/%3E%3C/svg%3E");
 }
 
 * { box-sizing: border-box; }
@@ -66,11 +72,11 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 .dayhead .ownwin { display: inline-block; width: 5px; height: 5px; border-radius: 50%;
   background: var(--accent); margin-left: 5px; vertical-align: middle; }
 
+/* полоска-итог по дню: доли категорий теми же цветами, что и дела */
 .daybar { display: flex; height: 3px; flex: none; background: var(--line);
   position: sticky; top: 46px; z-index: 9; }
 .daybar.empty { opacity: .5; }
-.daybar .strategic { background: var(--strategic); }
-.daybar .tactical { background: var(--tactical); }
+.daybar span { background: var(--cat); }
 
 /* Сетка: вместо линий — звёздочки на пересечениях часа и границы дня.
    Каждая колонка рисует по половине звёздочки на своих краях: у соседних колонок
@@ -110,22 +116,27 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 .planoff.bottom { bottom: 0; }
 .planline { position: absolute; left: 0; right: 0; height: 0; z-index: 1; pointer-events: none;
   border-top: 1.5px dashed rgba(27,77,255,.40); }
-.plangrip { position: absolute; left: 2px; z-index: 6; transform: translateY(-50%);
-  padding: 2px 7px; border-radius: 999px; cursor: ns-resize; touch-action: none;
-  background: var(--accent); color: #fff; opacity: .85; user-select: none;
-  font-size: 9.5px; line-height: 1.35; font-variant-numeric: tabular-nums; }
+/* ручка без подписи: до какого часа идёт запрет, видно по штриховке */
+.plangrip { position: absolute; left: 3px; z-index: 6; transform: translateY(-50%);
+  width: 20px; height: 5px; border-radius: 999px; cursor: ns-resize; touch-action: none;
+  background: var(--accent); opacity: .7; }
 .plangrip:hover { opacity: 1; }
 
-/* события: цветная обводка по всему контуру; пунктир — значит место выбрал алгоритм */
+/* цвет = категория дела; заливка = привязано ко времени или нет */
+.cat-work { --cat: var(--c-work); --cat-a: var(--c-work-a); }
+.cat-own_business { --cat: var(--c-own_business); --cat-a: var(--c-own_business-a); }
+.cat-personal_brand { --cat: var(--c-personal_brand); --cat-a: var(--c-personal_brand-a); }
+.cat-personal { --cat: var(--c-personal); --cat-a: var(--c-personal-a); }
+
 .block { position: absolute; left: 3px; right: 3px; border-radius: 10px; padding: 5px 7px; overflow: hidden;
   font-size: 11px; z-index: 2; color: var(--text);
-  background: var(--panel2); border: 2px solid var(--line); }
-.block.strategic { background: var(--strategic-soft); border-color: var(--strategic); color: #0d3f2f; }
-.block.tactical { background: var(--tactical-soft); border-color: var(--tactical); color: #5a3410; }
-.block.fixed { border-style: solid; }      /* привязано ко времени */
-.block.flex { border-style: dashed; }      /* поставил алгоритм */
-.block.risk { border-color: var(--risk); }
-.btime { display: block; opacity: .65; font-variant-numeric: tabular-nums;
+  background: var(--cat-a, var(--panel2)); border: none; }
+/* «ко времени» — сплошная заливка без обводки */
+.block.fixed { background: var(--cat, var(--accent)); color: #fff; }
+/* без привязки ко времени — полупрозрачное с пунктирной обводкой (место выбрал алгоритм) */
+.block.flex { border: 1.5px dashed var(--cat, var(--line)); }
+.block.risk { border: 1.5px dashed var(--risk); background: rgba(227,69,91,.14); color: var(--text); }
+.btime { display: block; opacity: .7; font-variant-numeric: tabular-nums;
   font-size: 9.5px; line-height: 1.2; letter-spacing: .04em; }
 .btitle { display: block; white-space: normal; overflow-wrap: anywhere; word-break: break-word;
   line-height: 1.2; overflow: hidden; font-size: 11.5px; }
@@ -296,11 +307,9 @@ input.f-low, select.f-low { border-color: var(--low); box-shadow: 0 0 0 2px rgba
 .pv-nowline { position: absolute; left: 0; right: 0; height: 2px; background: var(--accent); z-index: 3; }
 
 .pvblock { position: absolute; left: 2px; right: 2px; border-radius: 6px; padding: 1px 4px; overflow: visible;
-  font-size: 10px; border: 1px solid transparent; }
-.pvblock.strategic { background: var(--strategic-soft); border-color: var(--strategic); }
-.pvblock.tactical { background: var(--tactical-soft); border-color: var(--tactical); }
-.pvblock.fixed { border-style: solid; border-width: 2px; }        /* привязано ко времени — толстая сплошная */
-.pvblock.flex { border-style: dashed; opacity: .78; }             /* гибкая — пунктир + полупрозрачность */
+  font-size: 10px; border: 1px solid transparent; background: var(--cat-a, var(--panel2)); }
+.pvblock.fixed { background: var(--cat, var(--accent)); color: #fff; border: none; }
+.pvblock.flex { border: 1px dashed var(--cat, var(--line)); opacity: .85; }
 .pvblock.ctx { z-index: 1; overflow: hidden; }
 .pvblock.draft { z-index: 5; cursor: grab; box-shadow: 0 4px 14px rgba(22,24,26,.18); }
 .pvblock.draft.dragging { opacity: .55; cursor: grabbing; }
@@ -419,6 +428,14 @@ input.f-low, select.f-low { border-color: var(--low); box-shadow: 0 0 0 2px rgba
 .bp-date-btn.pale { background: rgba(188,220,255,.24); color: #eaf3ff; }
 .bp-hint, .bp-time, .bp-lab { display: none; }
 
+/* «только 14.08» — вырвать один день из цикла повторения */
+.bp-occrow { display: flex; align-items: center; gap: var(--bp-gap); }
+.bp-detach { flex: 0 0 auto; border: none; cursor: pointer; padding: 9px 10px;
+  border-radius: var(--bp-r); background: #bcdcff; color: #0b2c8a;
+  font-size: 12px; font-weight: 600; line-height: 1; white-space: nowrap; }
+.bp-detach:hover { background: #a9d0ff; }
+.bp-note { flex: 1 1 0; font-size: 10.5px; line-height: 1.25; color: rgba(255,255,255,.82); padding-left: 4px; }
+
 /* кнопка «повторение» в строке времени */
 .bp-rep { flex: 0 1 auto; min-width: 0; border: none; cursor: pointer; padding: 0 8px;
   background: rgba(255,255,255,.22); color: #fff; font-size: 11.5px; line-height: 1;
@@ -515,12 +532,14 @@ input.f-low, select.f-low { border-color: var(--low); box-shadow: 0 0 0 2px rgba
 .tl-sub { padding: 6px 4px 8px; font-size: 13px; font-weight: 600; color: var(--risk); }
 
 .tcard { border-radius: 20px; padding: 14px 16px 13px; cursor: pointer;
-  background: var(--panel2); border: 1.5px solid transparent; }
-.tcard.strategic { background: var(--strategic-soft); color: #0d3f2f; }
-.tcard.tactical { background: var(--tactical-soft); color: #5a3410; }
-.tcard.flex { border-style: dashed; border-color: rgba(19,23,34,.14); }   /* место выбрал алгоритм */
-.tcard.running { border-color: var(--accent); border-style: solid; }
-.tcard.risk, .tcard.unplaced { background: #fdeced; color: #8d1f2f; border-color: rgba(227,69,91,.4); }
+  background: var(--cat-a, var(--panel2)); border: 1.5px solid transparent; }
+.tcard.fixed { background: var(--cat, var(--accent)); color: #fff; }    /* ко времени — сплошная */
+.tcard.flex { border-style: dashed; border-color: var(--cat, rgba(19,23,34,.14)); }
+.tcard.fixed .tc-btn, .tcard.fixed .tc-dur { background: rgba(255,255,255,.22); }
+.tcard.running { box-shadow: 0 0 0 2px var(--accent); }
+.tcard.risk, .tcard.unplaced { background: #fdeced; color: #8d1f2f;
+  border-style: dashed; border-color: rgba(227,69,91,.4); }
+.tcard.risk .tc-btn, .tcard.unplaced .tc-btn { background: rgba(255,255,255,.7); }
 .tcard.done { opacity: .5; }
 /* только что созданное дело — видно, куда его поставил алгоритм */
 .tcard.justadded { border-color: var(--accent); border-style: solid;
@@ -528,6 +547,7 @@ input.f-low, select.f-low { border-color: var(--low); box-shadow: 0 0 0 2px rgba
 .tcard.done .tc-title { text-decoration: line-through; }
 .tc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .tc-title { font-size: 19px; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
+.tc-rep { margin-left: 6px; font-size: 13px; font-weight: 400; opacity: .7; }
 .tc-acts { display: flex; gap: 6px; flex: none; }
 .tc-btn { width: 34px; height: 34px; border-radius: 50%; border: none; cursor: pointer;
   background: rgba(255,255,255,.78); color: inherit; font-size: 15px; line-height: 1; }

@@ -874,3 +874,43 @@ test('scheduler: прошедший фрагмент не переносится
   eq(task.chunks.length, 2, 'прожитый кусок остаётся на своём месте');
   eq(new Date(task.chunks[0].start).getHours(), 9);
 });
+
+// ---------- вхождение, вырванное из цикла ----------
+test('recurrence: день из exdates пропускается', () => {
+  const t = fixed({
+    start: new Date(2026, 6, 21, 7, 0).toISOString(),
+    durationMinutes: 60,
+    recurrence: { freq: 'day', interval: 1 },
+    exdates: ['2026-07-23'],
+  });
+  const occ = expandOccurrences(t, new Date(2026, 6, 21), new Date(2026, 6, 25, 23, 59));
+  const days = occ.map((o) => toDateKey(o.start));
+  eq(days.length, 4, 'из пяти дней остаётся четыре');
+  assert(!days.includes('2026-07-23'), 'вырванный день не разворачивается');
+  assert(days.includes('2026-07-22') && days.includes('2026-07-24'), 'соседние дни на месте');
+});
+
+test('recurrence: exdates не сдвигают счёт «после N повторений»', () => {
+  const t = fixed({
+    start: new Date(2026, 6, 21, 7, 0).toISOString(),
+    durationMinutes: 60,
+    recurrence: { freq: 'day', interval: 1, count: 3 },
+    exdates: ['2026-07-22'],
+  });
+  const days = expandOccurrences(t, new Date(2026, 6, 21), new Date(2026, 6, 30))
+    .map((o) => toDateKey(o.start));
+  eq(days.join(','), '2026-07-21,2026-07-23', 'ряд из трёх, средний вырван');
+});
+
+test('freeSlots: вырванный день освобождает время', () => {
+  const t = fixed({
+    start: new Date(2026, 6, 22, 8, 0).toISOString(),
+    durationMinutes: 120,
+    recurrence: { freq: 'day', interval: 1 },
+    exdates: ['2026-07-22'],
+  });
+  const slots = computeFreeSlots([t], { ...cfg, bufferMinutes: 0 }, new Date(2026, 6, 22, 6, 0),
+    new Date(2026, 6, 22, 23, 59));
+  eq(slots.length, 1, 'день свободен целиком');
+  eq(slots[0].minutes, 14 * 60, '08:00–22:00');
+});
