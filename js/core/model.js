@@ -25,6 +25,8 @@ export const DEFAULT_CONFIG = {
   moveBoostTactical: 0.1,     // тактическим — слабее (D.20)
   noSplitUnderMinutes: 90,    // задачи не длиннее этого не дробим вообще (D.7)
   minChunkFloorMinutes: 45,   // минимальный осколок при вынужденном дроблении (D.7)
+  spreadFromDays: 3,          // дедлайн дальше этого — не уплотняем, ищем спокойный день
+  busyDayMinutes: 240,        // день считается загруженным начиная с этого времени
 };
 
 let counter = 0;

@@ -2,12 +2,13 @@
 import {
   TYPE, NATURE, STATUS, DEFAULT_CONFIG, newId, targetDuration, minDuration,
 } from './model.js';
-import { computeFreeSlots } from './freeSlots.js';
+import { computeFreeSlots, dayWindow } from './freeSlots.js';
 import {
   priorityScore, deadlineCutoff, earliestFloor, placedMinutes,
 } from './scoring.js';
-import { startOfDay, addDays, fromDateKey, parseHM, dayAt } from './time.js';
+import { startOfDay, addDays, fromDateKey, parseHM, dayAt, minutesOfDay } from './time.js';
 import { detectFixedConflicts } from './conflicts.js';
+import { expandOccurrences } from './recurrence.js';
 
 /**
  * Расставить гибкие задачи по свободному времени. Мутирует и возвращает items.
@@ -16,16 +17,13 @@ import { detectFixedConflicts } from './conflicts.js';
 export function schedule(items, config = DEFAULT_CONFIG, now = new Date()) {
   const horizonEnd = computeHorizon(items, config, now);
 
-  // Шаг 2 (D.5): замораживаем только вручную закреплённые (locked) чанки; остальное
-  // пересобираем — незакреплённое всегда переливается вокруг событий, включая только что
-  // добавленные fixed-события (иначе новое событие могло лечь поверх свежего авто-чанка).
   for (const t of items) {
     if (t.type !== TYPE.FLEXIBLE || t.status === STATUS.DONE) continue;
-    t.chunks = (t.chunks || []).filter((c) => c.locked);
     t.atRisk = false;
     t.atRiskReason = null;
     t.shortfallMinutes = null;
   }
+  keepValidChunks(items, config, now, horizonEnd);
 
   const flexible = items.filter((t) => t.type === TYPE.FLEXIBLE && t.status !== STATUS.DONE);
   const pool = flexible.filter((t) => targetDuration(t) - placedMinutes(t) > 0);
@@ -47,7 +45,7 @@ export function schedule(items, config = DEFAULT_CONFIG, now = new Date()) {
 
     // запасной набор слотов — без буферов вокруг дел; считаем только если понадобится
     placeTask(best, freeSlots, config,
-      () => computeFreeSlots(items, config, now, horizonEnd, { buffer: 0 }));
+      () => computeFreeSlots(items, config, now, horizonEnd, { buffer: 0 }), now);
     pool.splice(pool.indexOf(best), 1);
   }
 
@@ -61,6 +59,57 @@ export function schedule(items, config = DEFAULT_CONFIG, now = new Date()) {
   const atRisk = flexible.filter((t) => t.atRisk);
   const conflicts = items.filter((t) => t.conflict);
   return { items, placed, atRisk, conflicts };
+}
+
+/**
+ * Шаг 2 (D.5): план не пересобирается заново на каждое действие.
+ * Уже расставленные куски остаются на своих местах, пока они годны: не прожиты,
+ * внутри окна планирования, до дедлайна и ни на кого не налезают. Иначе одна галочка
+ * «сделано» перетряхивала весь план, который пользователь уже видел и принял.
+ * Чтобы алгоритм переставил задачу, её куски нужно удалить (кнопка «пересчитать план»,
+ * смена дедлайна, открепление) — освободившееся место он разберёт сам.
+ */
+function keepValidChunks(items, config, now, horizonEnd) {
+  const busy = [];
+  for (const it of items) {
+    if (it.type !== TYPE.FIXED) continue;         // события «ко времени» — вне обсуждения
+    for (const occ of expandOccurrences(it, startOfDay(now), horizonEnd)) {
+      busy.push([occ.start.valueOf(), occ.start.valueOf() + occ.durationMinutes * 60000]);
+    }
+  }
+
+  // разбираем закреплённые вручную, затем по времени: кто стоял раньше, тот и остаётся
+  const cand = [];
+  for (const t of items) {
+    if (t.type !== TYPE.FLEXIBLE || t.status === STATUS.DONE) continue;
+    for (const c of (t.chunks || [])) cand.push({ t, c, start: new Date(c.start).valueOf() });
+  }
+  cand.sort((a, b) => (b.c.locked ? 1 : 0) - (a.c.locked ? 1 : 0) || a.start - b.start);
+
+  const keep = new Map();
+  for (const { t, c, start } of cand) {
+    const end = start + c.durationMinutes * 60000;
+    if (!c.locked && !chunkStillFits(t, start, end, busy, config, now)) continue;
+    busy.push([start, end]);
+    keep.set(t.id, [...(keep.get(t.id) || []), c]);
+  }
+  for (const t of items) {
+    if (t.type !== TYPE.FLEXIBLE || t.status === STATUS.DONE) continue;
+    t.chunks = (keep.get(t.id) || []).sort((a, b) => new Date(a.start) - new Date(b.start));
+  }
+}
+
+/** Годится ли ранее размещённый кусок там, где он стоит. */
+function chunkStillFits(task, start, end, busy, config, now) {
+  if (end <= now.valueOf()) return false;                       // прожит — переставим заново
+  const cutoff = deadlineCutoff(task, config);
+  if (cutoff && end > cutoff.valueOf()) return false;
+  const floor = earliestFloor(task, config);
+  if (floor && start < floor.valueOf()) return false;
+  const from = minutesOfDay(new Date(start));
+  const win = dayWindow(config, new Date(start));
+  if (from < win.start || from + (end - start) / 60000 > win.end) return false;
+  return !busy.some(([a, b]) => start < b && end > a);
 }
 
 function computeHorizon(items, config, now) {
@@ -140,11 +189,11 @@ function finishStatus(task) {
  * где место для него объективно есть.
  * @param {Function} [tightSlots] ленивый расчёт слотов без буферов
  */
-function placeTask(task, freeSlots, config, tightSlots) {
+function placeTask(task, freeSlots, config, tightSlots, now) {
   const saved = (task.chunks || []).map((c) => ({ ...c }));
   const attempt = (slots) => {
     task.chunks = saved.map((c) => ({ ...c }));
-    const r = tryPlace(task, slots, config);
+    const r = tryPlace(task, slots, config, now);
     return { ...r, chunks: task.chunks };
   };
 
@@ -163,7 +212,7 @@ function placeTask(task, freeSlots, config, tightSlots) {
  * Ничего не помечает — только раскладывает чанки и сообщает, получилось ли.
  * @returns {{ok:boolean, reason?:string, shortfall?:number}}
  */
-function tryPlace(task, freeSlots, config) {
+function tryPlace(task, freeSlots, config, now) {
   const already = placedMinutes(task);
   const toBookMax = targetDuration(task) - already;
   const needMin = Math.max(0, minDuration(task) - already);
@@ -171,6 +220,47 @@ function tryPlace(task, freeSlots, config) {
 
   const cutoff = deadlineCutoff(task, config);
   const usable = clipSlots(freeSlots, cutoff, earliestFloor(task, config));
+
+  // Дедлайн далеко — сначала пробуем спокойные дни (D.4.3). Если так не выходит,
+  // возвращаемся к обычному уплотнению «как можно раньше».
+  const calm = calmSlots(usable, task, config, now);
+  if (calm.length && calm.length !== usable.length) {
+    const saved = (task.chunks || []).map((c) => ({ ...c }));
+    const r = fillSlots(task, calm, config, toBookMax, needMin);
+    if (r.ok) return r;
+    task.chunks = saved;
+  }
+  return fillSlots(task, usable, config, toBookMax, needMin);
+}
+
+/**
+ * Дни между сегодня и дедлайном, где ещё спокойно (занято меньше busyDayMinutes).
+ * Задачу с далёким дедлайном незачем впихивать в ближайшую щель загруженного дня:
+ * лучше положить её в свободный день посередине — и к дедлайну не впритык, и
+ * сегодняшний день не раздувается. Пустой список = спокойных дней нет.
+ */
+function calmSlots(usable, task, config, now) {
+  const cutoff = deadlineCutoff(task, config);
+  if (!cutoff || !usable.length) return usable;
+  const daysLeft = Math.floor((cutoff.valueOf() - now.valueOf()) / 86400000);
+  if (daysLeft < (config.spreadFromDays ?? 3)) return usable;
+
+  const freeByDay = new Map();
+  for (const s of usable) {
+    const key = startOfDay(s.start).valueOf();
+    freeByDay.set(key, (freeByDay.get(key) || 0) + s.minutes);
+  }
+  const limit = config.busyDayMinutes ?? 240;
+  return usable.filter((s) => {
+    const day = startOfDay(s.start);
+    const win = dayWindow(config, day);
+    // занято = ёмкость дня минус то, что в нём осталось свободного
+    return (win.end - win.start) - (freeByDay.get(day.valueOf()) || 0) < limit;
+  });
+}
+
+/** Разложить задачу по готовому списку слотов: целиком или, если иначе никак, кусками. */
+function fillSlots(task, usable, config, toBookMax, needMin) {
   const availBefore = usable.reduce((s, x) => s + x.minutes, 0);
 
   // Анти-фрагментация (D.7): короткие задачи не дробим вообще; длинные — только вынужденно,

@@ -637,9 +637,16 @@ test('scheduler: обмен дедлайнами меняет порядок з�
   const startB1 = new Date(b.chunks[0].start).getTime();
   assert(startA1 < startB1, 'сначала A (дедлайн раньше)');
 
-  // меняем дедлайны местами — план должен перестроиться зеркально
+  // меняем дедлайны местами. Сам по себе переплан ничего не двигает — уже принятый
+  // план устойчив; чтобы алгоритм переставил задачи, их куски отпускают (как это
+  // делает шторка при смене дедлайна).
   a.deadline = '2026-07-23';
   b.deadline = '2026-07-22';
+  schedule(items, cfg, NOW);
+  eq(new Date(a.chunks[0].start).getTime(), startA1, 'без отпускания план не шелохнулся');
+
+  a.chunks = [];
+  b.chunks = [];
   schedule(items, cfg, NOW);
   const startA2 = new Date(a.chunks[0].start).getTime();
   const startB2 = new Date(b.chunks[0].start).getTime();
@@ -653,9 +660,13 @@ test('scheduler: закреплённая задача не двигается, 
   schedule(items, cfg, NOW);
   eq(new Date(a.chunks[0].start).getHours(), 18, 'закреплённая осталась на месте');
 
-  a.chunks.forEach((c) => { c.locked = false; });   // открепили — как кнопкой в шторке
+  a.chunks.forEach((c) => { c.locked = false; });   // просто сняли закрепление
   schedule(items, cfg, NOW);
-  eq(new Date(a.chunks[0].start).getHours(), 8, 'после открепления уехала в самый ранний слот');
+  eq(new Date(a.chunks[0].start).getHours(), 18, 'место годное — задача осталась на нём');
+
+  a.chunks = [];                                   // отпустили — как кнопкой «открепить»
+  schedule(items, cfg, NOW);
+  eq(new Date(a.chunks[0].start).getHours(), 8, 'алгоритм переставил в самый ранний слот');
 });
 
 test('scheduler: детерминизм — два прогона совпадают', () => {
@@ -913,4 +924,99 @@ test('freeSlots: вырванный день освобождает время',
     new Date(2026, 6, 22, 23, 59));
   eq(slots.length, 1, 'день свободен целиком');
   eq(slots[0].minutes, 14 * 60, '08:00–22:00');
+});
+
+// ---------- устойчивость плана ----------
+test('scheduler: отметка «сделано» не перетряхивает остальной план', () => {
+  const items = [
+    flex({ id: 'a', title: 'A', durationMinMinutes: 120, durationMaxMinutes: 120, importance: 3, createdAt: '2026-07-20T10:00:00Z' }),
+    flex({ id: 'b', title: 'B', durationMinMinutes: 120, durationMaxMinutes: 120, importance: 3, createdAt: '2026-07-20T11:00:00Z' }),
+    flex({ id: 'c', title: 'C', durationMinMinutes: 120, durationMaxMinutes: 120, importance: 5, createdAt: '2026-07-20T12:00:00Z' }),
+  ];
+  schedule(items, cfg, NOW);
+  const before = items.map((t) => t.chunks.map((c) => c.start).join(','));
+
+  items.find((x) => x.id === 'c').status = STATUS.DONE;   // отметили одно дело
+  schedule(items, cfg, NOW);
+  const after = items.map((t) => t.chunks.map((c) => c.start).join(','));
+  eq(after[0], before[0], 'A осталась на своём месте');
+  eq(after[1], before[1], 'B осталась на своём месте');
+});
+
+test('scheduler: удаление дела не двигает соседей', () => {
+  const items = [
+    flex({ id: 'a', durationMinMinutes: 120, durationMaxMinutes: 120, importance: 3, createdAt: '2026-07-20T10:00:00Z' }),
+    flex({ id: 'b', durationMinMinutes: 120, durationMaxMinutes: 120, importance: 3, createdAt: '2026-07-20T11:00:00Z' }),
+  ];
+  schedule(items, cfg, NOW);
+  const keepStart = items[1].chunks[0].start;
+  items.splice(0, 1);
+  schedule(items, cfg, NOW);
+  eq(items[0].chunks[0].start, keepStart, 'оставшаяся задача не поехала на освободившееся место');
+});
+
+test('scheduler: новое событие «ко времени» двигает только то, что накрыло', () => {
+  const items = [
+    flex({ id: 'a', durationMinMinutes: 60, durationMaxMinutes: 60, importance: 3, createdAt: '2026-07-20T10:00:00Z' }),
+    flex({ id: 'b', durationMinMinutes: 60, durationMaxMinutes: 60, importance: 3, createdAt: '2026-07-20T11:00:00Z' }),
+  ];
+  schedule(items, cfg, NOW);
+  const aStart = items[0].chunks[0].start;          // 08:00–09:00
+  const bStart = items[1].chunks[0].start;          // после буфера
+  items.push(fixed({ id: 'f', start: new Date(2026, 6, 21, 8, 0).toISOString(), durationMinutes: 60 }));
+  schedule(items, cfg, NOW);
+  assert(items[0].chunks[0].start !== aStart, 'накрытая задача переехала');
+  eq(items[1].chunks[0].start, bStart, 'соседняя осталась на месте');
+});
+
+test('scheduler: прожитый кусок переносится, а не остаётся во вчера', () => {
+  const now = new Date(2026, 6, 21, 12, 0);
+  const task = flex({ id: 'p', durationMinMinutes: 60, durationMaxMinutes: 60, importance: 3 });
+  task.chunks = [{ id: 'c1', start: new Date(2026, 6, 20, 9, 0).toISOString(), durationMinutes: 60, locked: false, status: STATUS.SCHEDULED }];
+  schedule([task], cfg, now);
+  assert(new Date(task.chunks[0].start) >= now, 'задача уехала в будущее');
+});
+
+// ---------- далёкий дедлайн: без уплотнения ----------
+test('scheduler: с далёким дедлайном дело идёт в спокойный день, а не в щель загруженного', () => {
+  const items = [];
+  for (let d = 21; d <= 23; d += 1) {   // три ближайших дня забиты по 5 часов
+    items.push(fixed({ id: `f${d}`, start: new Date(2026, 6, d, 9, 0).toISOString(), durationMinutes: 300 }));
+  }
+  const task = flex({ id: 'q', durationMinMinutes: 60, durationMaxMinutes: 60, importance: 3, deadline: '2026-07-31' });
+  items.push(task);
+  schedule(items, cfg, NOW);
+  const day = new Date(task.chunks[0].start).getDate();
+  assert(day >= 24, `ждали спокойный день, получили ${day} июля`);
+  assert(day < 31, 'и не впритык к дедлайну');
+});
+
+test('scheduler: близкий дедлайн по-прежнему уплотняется', () => {
+  const items = [
+    fixed({ id: 'f', start: new Date(2026, 6, 21, 9, 0).toISOString(), durationMinutes: 300 }),
+    flex({ id: 'q', durationMinMinutes: 60, durationMaxMinutes: 60, importance: 3, deadline: '2026-07-22' }),
+  ];
+  schedule(items, cfg, NOW);
+  eq(new Date(items[1].chunks[0].start).getDate(), 21, 'ставим сегодня, дедлайн близко');
+});
+
+test('scheduler: спокойных дней нет — возвращаемся к уплотнению', () => {
+  const items = [];
+  for (let d = 21; d <= 31; d += 1) {
+    items.push(fixed({ id: `f${d}`, start: new Date(2026, 6, d, 9, 0).toISOString(), durationMinutes: 300 }));
+  }
+  const task = flex({ id: 'q', durationMinMinutes: 60, durationMaxMinutes: 60, importance: 3, deadline: '2026-07-31' });
+  items.push(task);
+  schedule(items, cfg, NOW);
+  eq(task.chunks.length, 1, 'дело всё равно размещено');
+  assert(!task.atRisk, 'и не помечено «не помещается»');
+});
+
+test('scheduler: без дедлайна дело по-прежнему едет как можно раньше', () => {
+  const items = [
+    fixed({ id: 'f', start: new Date(2026, 6, 21, 9, 0).toISOString(), durationMinutes: 300 }),
+    flex({ id: 'q', durationMinMinutes: 60, durationMaxMinutes: 60, importance: 3 }),
+  ];
+  schedule(items, cfg, NOW);
+  eq(new Date(items[1].chunks[0].start).getDate(), 21, 'сегодня, в первую же щель');
 });

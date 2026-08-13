@@ -87,6 +87,39 @@ function refreshCollision() {
   return true;
 }
 
+/**
+ * Насколько плану «больно»: сколько дел не помещается и на сколько минут не хватает.
+ * Меньше — лучше. Нужно, чтобы сравнивать два варианта плана между собой.
+ */
+function planTrouble(items) {
+  let count = 0;
+  let minutes = 0;
+  for (const t of items) {
+    if (!t.atRisk || t.status === STATUS.DONE) continue;
+    count += 1;
+    minutes += t.shortfallMinutes || targetDuration(t) || 0;
+  }
+  return count * 100000 + minutes;
+}
+
+/**
+ * Адаптивность без сюрпризов: пробуем разложить всё заново на копии плана
+ * (вдруг освободилось место — например, удалили дело) и принимаем результат,
+ * только если стало строго лучше. Если пересборка кому-то ломает размещение,
+ * остаёмся на привычном плане — пользователь не должен разгребать накладки,
+ * возникшие на ровном месте.
+ */
+function adoptBetterPlan(now) {
+  if (planTrouble(state.items) === 0) return;      // и так всё помещается — не трогаем
+  const copy = JSON.parse(JSON.stringify(state.items));
+  for (const t of copy) {
+    if (t.type !== TYPE.FLEXIBLE || t.status === STATUS.DONE) continue;
+    t.chunks = (t.chunks || []).filter((c) => c.locked);
+  }
+  schedule(copy, state.config, now);
+  if (planTrouble(copy) < planTrouble(state.items)) state.items = copy;
+}
+
 function persistAndReschedule() {
   // пока наложение не разрешено — план не трогаем, просто сохраняем как есть
   if (state.pendingCollision) { saveItems(state.items); return; }
@@ -97,7 +130,9 @@ function persistAndReschedule() {
     const c = (t.chunks || [])[0];
     if (c) before.set(t.id, { start: c.start, durationMinutes: c.durationMinutes });
   }
-  schedule(state.items, state.config, new Date());
+  const now = new Date();
+  schedule(state.items, state.config, now);
+  adoptBetterPlan(now);
   for (const t of state.items) {
     if (t.atRisk && !(t.chunks || []).length && before.has(t.id)) t.displacedFrom = before.get(t.id);
     else if (!t.atRisk) t.displacedFrom = null;
@@ -198,7 +233,7 @@ function topRowHtml(dayCount) {
   return `<div class="toprow">
       <div class="toprow-left">
         <div class="seg rangeseg">${btn(1)}${btn(3)}${btn(5)}</div>
-        <button id="today-btn" class="iconbtn" hidden title="сегодня">⌖</button>
+        <button id="today-btn" class="iconbtn wide" hidden title="вернуться к сегодня">сегодня</button>
       </div>
       <div class="toprow-right">
         <button id="menu-btn" class="iconbtn" title="настройки">⋯</button>
@@ -809,7 +844,7 @@ function wireMenu() {
       render();
     };
   });
-  document.getElementById('mn-replan').onclick = () => { persistAndReschedule(); render(); };
+  document.getElementById('mn-replan').onclick = () => { state.menu = null; replanAll(); };
   document.getElementById('mn-close').onclick = () => { state.menu = null; render(); };
 }
 
@@ -1133,11 +1168,10 @@ function startDragGeneric(e, mode, key) {
     // Уронили на занятое — НЕ переносим молча. Оставляем там, где отпустили: дальше включается
     // обычный разбор наложения (⚠ на блоке, 3 свободных окна, пометка ↦ у мешающих дел).
     if (!state.dragState.invalid) {
-      // уронили на подвижное — освобождаем его, планировщик расставит заново
+      // уронили на подвижное — отпускаем его кусок, планировщик расставит заново
       for (const d of (state.dragState.displaced || [])) {
         const it = state.items.find((x) => x.id === d.itemId);
-        const ch = it && (it.chunks || []).find((c) => c.id === d.chunkId);
-        if (ch) ch.locked = false;
+        if (it) it.chunks = (it.chunks || []).filter((c) => c.id !== d.chunkId);
       }
     }
     state.dragState = null;
@@ -1426,7 +1460,7 @@ function applyShift(t) {
     t.start = addDays(new Date(t.start), 1).toISOString();
   } else {
     if (t.deadline) t.deadline = toDateKey(addDays(fromDateKey(t.deadline), 1));
-    (t.chunks || []).forEach((c) => { c.locked = false; });
+    t.chunks = [];
   }
 }
 
@@ -1526,16 +1560,28 @@ function movePastItem(itemId) {
 }
 
 /**
- * Освободилось время (удалили дело / отметили выполненным) — даём плану подтянуться:
- * открепляем задачи, которые раньше уже двигали, чтобы они могли вернуться на более ранний срок.
- * Кто именно поедет вперёд, решает скоринг (moveBoost: стратегическим компенсация выше).
+ * Отпустить куски, которые расставил алгоритм: условия у дела изменились, пусть
+ * поставит заново. Закреплённые вручную остаются — это решение пользователя.
  */
-function reclaimFreedTime() {
+function releaseAutoChunks(t) {
+  t.chunks = (t.chunks || []).filter((c) => c.locked);
+}
+
+/**
+ * «Пересчитать план» — единственное место, где план пересобирается целиком.
+ * В остальное время уже расставленное стоит на своих местах: отметка «сделано»,
+ * удаление или новое дело не должны перетряхивать неделю (см. keepValidChunks в ядре).
+ * Освободившееся время разбирается здесь: задачи, которые двигали, едут раньше
+ * (скоринг moveBoost — стратегическим компенсация выше).
+ */
+function replanAll() {
+  snapshot();
   for (const t of state.items) {
     if (t.type !== TYPE.FLEXIBLE || t.status === STATUS.DONE) continue;
-    if (!(t.movedCount > 0)) continue;
-    (t.chunks || []).forEach((c) => { if (new Date(c.start) > new Date()) c.locked = false; });
+    releaseAutoChunks(t);
   }
+  persistAndReschedule();
+  render();
 }
 
 /**
@@ -1552,7 +1598,7 @@ function markDone(id, occDate) {
   } else {
     t.status = STATUS.DONE;
   }
-  reclaimFreedTime(); persistAndReschedule(); render();
+  persistAndReschedule(); render();
 }
 
 /**
@@ -2208,7 +2254,7 @@ function wirePopover() {
       beforeChange();
       t.splittable = next;
       if (next) t.minChunkMinutes = Math.max(t.minChunkMinutes || 0, state.config.minChunkFloorMinutes || 45);
-      if (!isDraft) (t.chunks || []).forEach((c) => { c.locked = false; });  // пересобрать по новому правилу
+      if (!isDraft) releaseAutoChunks(t);      // пересобрать задачу по новому правилу
       after();
     };
   });
@@ -2223,8 +2269,8 @@ function wirePopover() {
     if (!isDraft) snapshot();
     t[field] = value || null;
     if (isDraft) { mountPopover(); return; }
-    // условия изменились — открепляем, чтобы алгоритм пересобрал план под новые границы
-    (t.chunks || []).forEach((c) => { c.locked = false; });
+    // условия изменились — отпускаем задачу, чтобы алгоритм поставил её под новые границы
+    releaseAutoChunks(t);
     after();
   };
   const dl = document.getElementById('bp-deadline');
@@ -2252,7 +2298,7 @@ function wirePopover() {
   const unpin = document.getElementById('bp-unpin');
   if (unpin) unpin.onclick = () => {
     snapshot();
-    (t.chunks || []).forEach((c) => { c.locked = false; });
+    t.chunks = [];                              // отдаём место алгоритму целиком
     state.armed = null;
     persistAndReschedule(); render();
   };
@@ -2273,7 +2319,6 @@ function wirePopover() {
     snapshot();
     state.items = state.items.filter((x) => x.id !== state.armed.itemId);
     state.armed = null;
-    reclaimFreedTime();
     persistAndReschedule(); render();
   };
 }
