@@ -504,7 +504,7 @@ function renderHome() {
   // шкала времени — первой колонкой слева, залипает при горизонтальной прокрутке
   const scale = `<div class="tscale">
     <div class="tshead"></div>
-    <div class="tsbar" style="--span:${span}">${hours.map((m) => `<span style="top:${((m - lo) / span) * 100}%">${formatHM(m)}</span>`).join('')}</div>
+    <div class="tsbar" style="--span:${span}">${hours.map((m) => `<span style="top:${((m - lo) / span) * 100}%">${Math.floor(m / 60) % 24}</span>`).join('')}</div>
   </div>`;
 
   app.innerHTML = `
@@ -1224,25 +1224,38 @@ function setupDayScroll(dayCount) {
   }
 }
 
-const ZOOM_MIN = 0.25;    // «пиксель на минуту»: сжатый вид
+const ZOOM_MIN = 0.05;    // «пиксель на минуту»: страховочный низ, обычно ниже реального
 const ZOOM_MAX = 3;       // и крупный
 
 const VIEW_FROM = 8 * 60;    // в экран по умолчанию попадает 08:00…
 const VIEW_TO = 20 * 60;     // …и до 20:00, остальные часы доступны прокруткой
 
-/** Масштаб по умолчанию: в экран помещается рабочее окно, сутки — прокруткой. */
-function fitZoom() {
+/** Высота, доступная сетке: календарь минус липкая шапка дня с полоской-итогом. */
+function gridViewHeight() {
   const sc = document.getElementById('daysScroll');
   const head = document.querySelector('.dayhead');
   const dbar = document.querySelector('.daybar');
   const headH = head ? head.offsetHeight + (dbar ? dbar.offsetHeight : 0) : 49;
-  const h = (sc ? sc.clientHeight : window.innerHeight * 0.8) - headH;
-  return clampN(h / (VIEW_TO - VIEW_FROM), ZOOM_MIN, ZOOM_MAX);
+  return (sc ? sc.clientHeight : window.innerHeight * 0.8) - headH;
+}
+
+/** Масштаб по умолчанию: в экран помещается рабочее окно, сутки — прокруткой. */
+function fitZoom() {
+  return clampN(gridViewHeight() / (VIEW_TO - VIEW_FROM), minZoom(), ZOOM_MAX);
+}
+
+/**
+ * Мельче этого масштаба сутки стали бы короче экрана — снизу появилась бы пустота.
+ * Поэтому предел отдаления — «все 24 часа ровно в экран», дальше не сжимаем.
+ */
+function minZoom() {
+  const span = Number(document.querySelector('.timeline')?.dataset.span || 24 * 60);
+  return Math.max(ZOOM_MIN, gridViewHeight() / span);
 }
 
 /** Масштаб: высоты сетки и шкалы задаём явно, чтобы они гарантированно совпадали. */
 function applyZoom(px) {
-  state.zoom = clampN(px, ZOOM_MIN, ZOOM_MAX);
+  state.zoom = clampN(px, minZoom(), ZOOM_MAX);
   const bar = document.querySelector('.tsbar');
   const tl = document.querySelector('.timeline');
   const span = Number(tl?.dataset.span || 840);

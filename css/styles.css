@@ -93,7 +93,8 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
     calc(100% + 8px) calc(var(--hourpx, 40px) / -2); }
 
 /* шкала времени слева */
-.tscale { flex: 0 0 46px; z-index: 6; display: flex; flex-direction: column; overflow: hidden; }
+/* шкала узкая: подписи — только час, без «:00» */
+.tscale { flex: 0 0 30px; z-index: 6; display: flex; flex-direction: column; overflow: hidden; }
 /* шапка шкалы непрозрачна: метки времени проезжают под ней, а не поверх шапок дней */
 .tshead { height: 46px; flex: none;
   position: relative; z-index: 2; background: var(--bg); }
@@ -104,7 +105,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
   background-image: var(--cross); background-repeat: repeat-y;
   background-size: 16px var(--hourpx, 40px);
   background-position: calc(100% + 8px) calc(var(--hourpx, 40px) / -2); }
-.tsbar span { position: absolute; right: 10px; transform: translateY(-50%);
+.tsbar span { position: absolute; right: 7px; transform: translateY(-50%);
   font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; letter-spacing: .04em; }
 .freehint { display: none; }
 .nowline { position: absolute; left: 0; right: 0; height: 2px; background: var(--accent); z-index: 3; }
