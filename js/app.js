@@ -1,6 +1,6 @@
 // Контроллер приложения (buildless SPA). Использует ядро из ./core/*.
 import {
-  TYPE, STATUS, CATEGORIES, makeTask, targetDuration, newId,
+  TYPE, STATUS, CATEGORIES, makeTask, targetDuration, newId, isChunkDone, doneMinutes, resizeChunk,
 } from './core/model.js';
 import { parseTask } from './core/parser.js';
 import { WEEKDAYS, WEEKDAY_ABBR } from './core/dict.js';
@@ -114,7 +114,7 @@ function adoptBetterPlan(now) {
   const copy = JSON.parse(JSON.stringify(state.items));
   for (const t of copy) {
     if (t.type !== TYPE.FLEXIBLE || t.status === STATUS.DONE) continue;
-    t.chunks = (t.chunks || []).filter((c) => c.locked);
+    t.chunks = (t.chunks || []).filter((c) => c.locked || isChunkDone(c));
   }
   schedule(copy, state.config, now);
   if (planTrouble(copy) < planTrouble(state.items)) state.items = copy;
@@ -285,10 +285,16 @@ function dayBlocks(day) {
         blocks.push(mkBlock(it, occ.start, occ.durationMinutes, null));
       }
     } else {
-      for (const ch of (it.chunks || [])) {
+      // куски одной задачи нумеруем по времени: «часть 2 из 3» видно и на блоке, и в шторке
+      const parts = [...(it.chunks || [])].sort((a, b) => new Date(a.start) - new Date(b.start));
+      parts.forEach((ch, i) => {
         const s = new Date(ch.start);
-        if (toDateKey(s) === toDateKey(day)) blocks.push(mkBlock(it, s, ch.durationMinutes, ch.id));
-      }
+        if (toDateKey(s) !== toDateKey(day)) return;
+        const b = mkBlock(it, s, ch.durationMinutes, ch.id);
+        if (parts.length > 1) { b.part = i + 1; b.parts = parts.length; }
+        if (isChunkDone(ch)) b.done = true;
+        blocks.push(b);
+      });
     }
   }
   // Не размещённые задачи (at-risk без кусков) показываем призрачным блоком на первом
@@ -369,7 +375,7 @@ function mkBlock(item, startDate, durationMinutes, chunkId) {
 function refreshRiskSuggestions(atRisk, now) {
   const horizon = horizonForPreview(now);
   atRisk.forEach((t) => {
-    const dur = (t.type === TYPE.FIXED ? t.durationMinutes : targetDuration(t)) || 60;
+    const dur = unfinishedMinutes(t) || 60;
     const free = suggestFreeSlots(dur, state.items, state.config, now, horizon, 3, t.id);
     // если чисто свободных окон мало — добираем места, занятые делами, которые можно подвинуть
     t.riskSuggestions = free.length >= 3 ? free : free.concat(slotsFreedByYielding(t, dur, free, 3 - free.length));
@@ -383,7 +389,7 @@ function refreshRiskSuggestions(atRisk, now) {
 function focusedItem(now) {
   const focus = state.yieldFocus ? state.items.find((x) => x.id === state.yieldFocus) : null;
   if (!focus) { state.yieldFocus = null; return null; }
-  const dur = (focus.type === TYPE.FIXED ? focus.durationMinutes : targetDuration(focus)) || 60;
+  const dur = unfinishedMinutes(focus) || 60;
   // текущее место исключаем — предлагать «перенести туда же» бессмысленно
   const curStart = focus.start ? new Date(focus.start).valueOf()
     : (focus.chunks && focus.chunks[0] ? new Date(focus.chunks[0].start).valueOf() : null);
@@ -598,9 +604,10 @@ function todayCardHtml(b, now) {
   return `<div class="tcard ${cls}" data-item="${b.itemId}" data-chunk="${b.chunkId || ''}"
       data-occ="${b.dateKey}" ${b.unplaced ? 'data-unplaced="1"' : ''}>
       <div class="tc-head">
-        <div class="tc-title">${esc(b.title)}${b.recurring ? '<span class="tc-rep" title="повторяющееся">↻</span>' : ''}</div>
+        <div class="tc-title">${esc(b.title)}${b.recurring ? '<span class="tc-rep" title="повторяющееся">↻</span>' : ''}${b.parts ? `<span class="tc-part" title="часть ${b.part} из ${b.parts}">${b.part}/${b.parts}</span>` : ''}</div>
         <div class="tc-acts">
-          <button class="tc-btn ok" data-done="${b.itemId}" data-occ="${b.dateKey}" title="сделано">✓</button>
+          <button class="tc-btn ok" data-done="${b.itemId}" data-occ="${b.dateKey}"
+            data-chunk="${b.chunkId || ''}" title="${b.parts ? `сделана часть ${b.part} из ${b.parts}` : 'сделано'}">✓</button>
           <button class="tc-btn mv" data-moveitem="${b.itemId}" title="перенести">↷</button>
         </div>
       </div>
@@ -698,7 +705,10 @@ function renderToday() {
   document.getElementById('focus-cancel')?.addEventListener('click', () => { state.yieldFocus = null; render(); });
 
   app.querySelectorAll('[data-done]').forEach((b) => {
-    b.onclick = (e) => { e.stopPropagation(); state.armed = null; markDone(b.dataset.done, b.dataset.occ); };
+    b.onclick = (e) => {
+      e.stopPropagation(); state.armed = null;
+      markDone(b.dataset.done, b.dataset.occ, b.dataset.chunk || null);
+    };
   });
   app.querySelectorAll('[data-moveitem]').forEach((b) => {
     b.onclick = (e) => { e.stopPropagation(); state.armed = null; movePastItem(b.dataset.moveitem); };
@@ -1109,7 +1119,10 @@ function targetFor(key) {
       if (t.type === TYPE.FIXED) { t.start = iso; t.durationMinutes = p.durationMinutes; }
       else {
         const c = (t.chunks || []).find((x) => x.id === key.chunkId);
-        c.start = iso; c.durationMinutes = p.durationMinutes; c.locked = true;  // ручной перенос закрепляет
+        // ручное изменение длины меняет и длительность задачи, иначе разница осталась бы
+        // хвостом «которому не нашлось места» — см. resizeChunk
+        resizeChunk(t, c, p.durationMinutes);
+        c.start = iso; c.locked = true;                    // ручной перенос закрепляет
       }
     },
     commit: () => { persistAndReschedule(); render(); },
@@ -1351,7 +1364,7 @@ function renderDayColumn(day, now, markers = [], lo, span) {
       ${(b.yielding || b.unplaced) ? `data-yield="${b.itemId}"` : ''}
       style="top:${top}%;height:${height}%;${laneStyle(b)}" title="${esc(b.title)}">
       ${handles}${warn}${pastBtns}${b.movedCount ? `<span class="bmoved" title="переносилось раз: ${b.movedCount}">↻</span>` : ''}
-      <span class="btime">${formatHM(b.startMin)}</span>
+      <span class="btime">${formatHM(b.startMin)}${b.parts ? `<i class="bpart" title="часть ${b.part} из ${b.parts}">${b.part}/${b.parts}</i>` : ''}</span>
       <span class="btitle">${esc(b.title)}</span>
     </div>`;
   }).join('');
@@ -1445,7 +1458,7 @@ function slotsFreedByYielding(task, dur, already, need) {
 function placeAtRiskAt(itemId, startISO, displacesId) {
   const t = state.items.find((x) => x.id === itemId);
   if (!t) return;
-  const dur = (t.type === TYPE.FIXED ? t.durationMinutes : targetDuration(t)) || 60;
+  const dur = unfinishedMinutes(t) || 60;
   markMoved(t);
   if (displacesId) {                        // вариант требует подвинуть другое дело — двигаем
     const other = state.items.find((x) => x.id === displacesId);
@@ -1453,7 +1466,8 @@ function placeAtRiskAt(itemId, startISO, displacesId) {
   }
   if (t.type === TYPE.FIXED) { t.start = startISO; }
   else {
-    t.chunks = [{ id: newId('c'), start: startISO, durationMinutes: dur, locked: true, status: STATUS.SCHEDULED }];
+    t.chunks = [...keepDoneChunks(t),
+      { id: newId('c'), start: startISO, durationMinutes: dur, locked: true, status: STATUS.SCHEDULED }];
   }
   t.atRisk = false; t.atRiskReason = null; t.status = STATUS.SCHEDULED;
   state.yieldFocus = null;
@@ -1475,7 +1489,7 @@ function applyShift(t) {
     t.start = addDays(new Date(t.start), 1).toISOString();
   } else {
     if (t.deadline) t.deadline = toDateKey(addDays(fromDateKey(t.deadline), 1));
-    t.chunks = [];
+    t.chunks = keepDoneChunks(t);        // сделанные части никуда не уступают
   }
 }
 
@@ -1551,7 +1565,7 @@ function movePastItem(itemId) {
   const t = state.items.find((x) => x.id === itemId);
   if (!t) return;
   const now = new Date();
-  const dur = (t.type === TYPE.FIXED ? t.durationMinutes : targetDuration(t)) || 60;
+  const dur = unfinishedMinutes(t) || 60;
   const cutoff = t.deadline
     ? dayAt(fromDateKey(t.deadline), parseHM(state.config.workEnd)).valueOf() : null;
 
@@ -1562,7 +1576,8 @@ function movePastItem(itemId) {
       markMoved(t);
       if (t.type === TYPE.FIXED) t.start = new Date(ms).toISOString();
       else {
-        t.chunks = [{ id: newId('c'), start: new Date(ms).toISOString(), durationMinutes: dur, locked: true, status: STATUS.SCHEDULED }];
+        t.chunks = [...keepDoneChunks(t),
+          { id: newId('c'), start: new Date(ms).toISOString(), durationMinutes: dur, locked: true, status: STATUS.SCHEDULED }];
         t.status = STATUS.SCHEDULED;
       }
       t.atRisk = false; t.atRiskReason = null;
@@ -1576,10 +1591,26 @@ function movePastItem(itemId) {
 
 /**
  * Отпустить куски, которые расставил алгоритм: условия у дела изменились, пусть
- * поставит заново. Закреплённые вручную остаются — это решение пользователя.
+ * поставит заново. Закреплённые вручную остаются — это решение пользователя,
+ * отмеченные сделанными — прожитое время (D.27).
  */
 function releaseAutoChunks(t) {
-  t.chunks = (t.chunks || []).filter((c) => c.locked);
+  t.chunks = (t.chunks || []).filter((c) => c.locked || isChunkDone(c));
+}
+
+/** Части, которые нельзя ни увезти, ни переиграть: уже сделанные. */
+function keepDoneChunks(t) {
+  return (t.chunks || []).filter(isChunkDone);
+}
+
+/**
+ * Сколько дела ещё осталось разместить: длительность минус уже сделанные части.
+ * По этой длине подбираются варианты переноса — предлагать окно на всю задачу,
+ * когда половина уже прожита, незачем.
+ */
+function unfinishedMinutes(t) {
+  if (t.type === TYPE.FIXED) return t.durationMinutes || 0;
+  return Math.max(0, targetDuration(t) - doneMinutes(t));
 }
 
 /**
@@ -1600,16 +1631,23 @@ function replanAll() {
 }
 
 /**
- * Отметить сделанным. У повторяющегося события галочка закрывает ТОЛЬКО тот день,
- * по которому её нажали, — весь цикл остаётся жить дальше (остальные правки, наоборот,
- * применяются ко всему циклу).
+ * Отметить сделанным. Галочка всегда относится к тому, по чему нажали:
+ * - у повторяющегося события — только к тому дню (весь цикл живёт дальше);
+ * - у задачи, разбитой алгоритмом на части, — только к этой части (D.27), чтобы
+ *   было видно прогресс по ходу дня; когда закрыты все части, закрывается и задача;
+ * - в остальных случаях — ко всему делу.
  */
-function markDone(id, occDate) {
+function markDone(id, occDate, chunkId) {
   const t = state.items.find((x) => x.id === id);
   if (!t) return;
   snapshot();
+  const chunks = t.chunks || [];
+  const part = chunkId ? chunks.find((c) => c.id === chunkId) : null;
   if (t.recurrence && occDate) {
     t.doneDates = [...new Set([...(t.doneDates || []), occDate])];
+  } else if (part && chunks.length > 1) {
+    part.status = STATUS.DONE;
+    if (chunks.every(isChunkDone)) t.status = STATUS.DONE;
   } else {
     t.status = STATUS.DONE;
   }
@@ -2090,8 +2128,15 @@ function mountPopover() {
   // из цикла» относятся именно к нему, всё остальное — ко всему циклу
   const occDate = (!isDraft && t.recurrence && state.armed.occDate) ? state.armed.occDate : null;
   const occDone = occDate && (t.doneDates || []).includes(occDate);
+  // задачу, разбитую алгоритмом на части, закрывают по частям — шторка открыта по одной
+  // из них, и ✅ относится именно к ней (D.27)
+  const parts = (!isDraft && t.type === TYPE.FLEXIBLE)
+    ? [...(t.chunks || [])].sort((a, b) => new Date(a.start) - new Date(b.start)) : [];
+  const partIdx = parts.length > 1 ? parts.findIndex((c) => c.id === state.armed.chunkId) : -1;
+  const partDone = partIdx >= 0 && isChunkDone(parts[partIdx]);
+  const partsDone = parts.filter(isChunkDone).length;
   // дело уже идёт или прошло — прямо здесь можно отметить «сделано» или перенести
-  const started = !isDraft && t.status !== STATUS.DONE && !occDone
+  const started = !isDraft && t.status !== STATUS.DONE && !occDone && !partDone
     && dayAt(fromDateKey(occDate || pos.dateKey), pos.startMin).valueOf() <= Date.now();
 
   const pop = document.createElement('div');
@@ -2114,6 +2159,11 @@ function mountPopover() {
       <button class="bp-detach" id="bp-detach"
         title="вырвать ${shortDate(occDate)} из цикла — дальше править отдельно">только ${shortDate(occDate)}</button>
       <span class="bp-note">правки — на весь цикл, ✅ — только этот день</span>
+    </div>` : ''}
+    ${partIdx >= 0 ? `<div class="bp-occrow">
+      <span class="bp-part">часть ${partIdx + 1} из ${parts.length}</span>
+      <span class="bp-note">${partDone ? 'эта часть сделана' : '✅ закроет только её'} · сделано
+        ${partsDone} из ${parts.length}</span>
     </div>` : ''}
     <div class="bp-row">
       <div class="seg slider soft" data-seg="type" data-pos="${isFixed ? 0 : 1}">
@@ -2142,7 +2192,8 @@ function mountPopover() {
     </div>
     <div class="bp-row bp-bottom">
       ${started ? `
-      <button class="bp-done" id="bp-done" title="сделано">✅</button>
+      <button class="bp-done" id="bp-done"
+        title="${partIdx >= 0 ? `сделана часть ${partIdx + 1} из ${parts.length}` : 'сделано'}">✅</button>
       <button class="bp-move" id="bp-move" title="перенести — подобрать новое место">↷</button>` : ''}
       ${isDraft ? '' : '<button class="bp-del" id="bp-del" title="удалить">🗑</button>'}
       <button class="bp-ok" id="bp-ok" title="сохранить и закрыть">✓</button>
@@ -2304,16 +2355,16 @@ function wirePopover() {
   // «сделано» и «перенести» для дела, которое уже идёт или прошло
   const doneBtn = document.getElementById('bp-done');
   if (doneBtn) doneBtn.onclick = () => {
-    const { itemId, occDate } = state.armed;
+    const { itemId, occDate, chunkId } = state.armed;
     state.armed = null;
-    markDone(itemId, occDate);
+    markDone(itemId, occDate, chunkId);
   };
   const moveBtn = document.getElementById('bp-move');
   if (moveBtn) moveBtn.onclick = () => { const id = state.armed.itemId; state.armed = null; movePastItem(id); };
   const unpin = document.getElementById('bp-unpin');
   if (unpin) unpin.onclick = () => {
     snapshot();
-    t.chunks = [];                              // отдаём место алгоритму целиком
+    t.chunks = keepDoneChunks(t);               // отдаём место алгоритму, кроме сделанного
     state.armed = null;
     persistAndReschedule(); render();
   };
@@ -2483,7 +2534,7 @@ function resyncArmedChunk() {
   const chunks = t.chunks || [];
   if (chunks.some((c) => c.id === a.chunkId)) return;
   if (!chunks.length) { state.armed = null; state.editSnapshot = null; return; }
-  a.chunkId = chunks[0].id;
+  a.chunkId = (chunks.find((c) => !isChunkDone(c)) || chunks[0]).id;   // на сделанную часть не перескакиваем
 }
 
 function render() {

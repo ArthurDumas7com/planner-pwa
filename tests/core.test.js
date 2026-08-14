@@ -1,7 +1,10 @@
 import { test, assert, eq, approx } from './assert.js';
 import { parseHM, formatHM, toDateKey, fromDateKey } from '../js/core/time.js';
 import { suggestFreeSlots } from '../js/core/conflicts.js';
-import { TYPE, NATURE, STATUS, DEFAULT_CONFIG, makeTask } from '../js/core/model.js';
+import {
+  TYPE, NATURE, STATUS, DEFAULT_CONFIG, makeTask, resizeChunk, isChunkDone, doneMinutes,
+  targetDuration,
+} from '../js/core/model.js';
 import { parseTask } from '../js/core/parser.js';
 import { expandOccurrences } from '../js/core/recurrence.js';
 import { computeFreeSlots } from '../js/core/freeSlots.js';
@@ -872,6 +875,95 @@ test('scheduler: соседние куски встык склеиваются',
   eq(task.chunks.length, 1);
   eq(task.chunks[0].durationMinutes, 90);
   eq(new Date(task.chunks[0].start).getHours(), 9);
+});
+
+// ---------- ручное изменение длины дела ----------
+test('model: укоротили кусок руками — укоротилось и само дело', () => {
+  const task = flex({ id: 'f', durationMinMinutes: 240, durationMaxMinutes: 240, importance: 3 });
+  task.chunks = [{ id: 'c1', start: new Date(2026, 6, 25, 14, 15).toISOString(), durationMinutes: 240, locked: true, status: STATUS.SCHEDULED }];
+  resizeChunk(task, task.chunks[0], 100);
+  eq(targetDuration(task), 100, 'цель равна тому, что видно в календаре');
+  eq(task.durationMinMinutes, 100);
+});
+
+test('model: растянули кусок руками — удлинилось и само дело', () => {
+  const task = flex({ id: 'f', durationMinMinutes: 60, durationMaxMinutes: 90, importance: 3 });
+  task.chunks = [{ id: 'c1', start: new Date(2026, 6, 25, 14, 0).toISOString(), durationMinutes: 90, locked: true, status: STATUS.SCHEDULED }];
+  resizeChunk(task, task.chunks[0], 150);
+  eq(targetDuration(task), 150);
+  eq(task.durationMinMinutes, 120, 'вилка min…max сдвинулась целиком');
+});
+
+test('model: у дела задан только максимум — минимум едет следом', () => {
+  const task = flex({ id: 'f', durationMaxMinutes: 240, importance: 3 });
+  task.durationMinMinutes = null;
+  task.chunks = [{ id: 'c1', start: new Date(2026, 6, 25, 14, 0).toISOString(), durationMinutes: 240, locked: true, status: STATUS.SCHEDULED }];
+  resizeChunk(task, task.chunks[0], 100);
+  eq(task.durationMaxMinutes, 100);
+  eq(task.durationMinMinutes, 100, 'а не «сколько-нибудь минимальное»');
+});
+
+test('model: перенос без изменения длины не трогает длительность дела', () => {
+  const task = flex({ id: 'f', durationMinMinutes: 120, durationMaxMinutes: 120, importance: 3 });
+  task.chunks = [{ id: 'c1', start: new Date(2026, 6, 25, 14, 0).toISOString(), durationMinutes: 60, locked: true, status: STATUS.SCHEDULED }];
+  resizeChunk(task, task.chunks[0], 60);
+  eq(targetDuration(task), 120, 'остаток в 60 мин всё ещё ждёт места');
+});
+
+test('scheduler: укороченное руками дело не становится «не помещается»', () => {
+  // дедлайн уже прошёл, дело стоит руками на будущей дате: до фикса «хвост» от
+  // укорачивания было некуда деть, и дело помечалось «не помещается»
+  const now = new Date(2026, 6, 21, 18, 49);
+  const task = flex({
+    id: 'f', durationMinMinutes: 240, durationMaxMinutes: 240, importance: 3, deadline: '2026-07-17',
+  });
+  task.chunks = [{ id: 'c1', start: new Date(2026, 6, 23, 14, 15).toISOString(), durationMinutes: 240, locked: true, status: STATUS.SCHEDULED }];
+  schedule([task], cfg, now);
+  assert(!task.atRisk, 'пока дело целое — всё в порядке');
+
+  resizeChunk(task, task.chunks[0], 100);         // потянули нижнюю ручку вверх
+  schedule([task], cfg, now);
+  assert(!task.atRisk, `после укорачивания: ${task.atRiskReason || ''}`);
+  eq(task.chunks.length, 1, 'никакого «хвоста» вторым куском');
+  eq(task.chunks[0].durationMinutes, 100);
+});
+
+// ---------- выполнение по частям ----------
+test('scheduler: сделанная часть остаётся на месте, даже когда она в прошлом', () => {
+  const now = new Date(2026, 6, 21, 16, 0);
+  const task = flex({ id: 'f', durationMinMinutes: 120, durationMaxMinutes: 120, importance: 3 });
+  task.chunks = [
+    { id: 'c1', start: new Date(2026, 6, 21, 9, 0).toISOString(), durationMinutes: 60, locked: false, status: STATUS.DONE },
+    { id: 'c2', start: new Date(2026, 6, 21, 18, 0).toISOString(), durationMinutes: 60, locked: false, status: STATUS.SCHEDULED },
+  ];
+  schedule([task], cfg, now);
+  const done = task.chunks.filter(isChunkDone);
+  eq(done.length, 1, 'сделанная часть не потерялась');
+  eq(new Date(done[0].start).getHours(), 9, 'и не уехала в будущее');
+  eq(doneMinutes(task), 60);
+  eq(task.chunks.length, 2, 'вторая часть по-прежнему ждёт своего времени');
+});
+
+test('scheduler: сделанные минуты не планируются заново', () => {
+  const now = new Date(2026, 6, 21, 16, 0);
+  const task = flex({ id: 'f', durationMinMinutes: 120, durationMaxMinutes: 120, importance: 3 });
+  task.chunks = [
+    { id: 'c1', start: new Date(2026, 6, 21, 9, 0).toISOString(), durationMinutes: 60, locked: false, status: STATUS.DONE },
+    { id: 'c2', start: new Date(2026, 6, 21, 10, 0).toISOString(), durationMinutes: 60, locked: false, status: STATUS.DONE },
+  ];
+  schedule([task], cfg, now);
+  eq(task.chunks.length, 2, 'обе части сделаны — добавлять нечего');
+  assert(!task.atRisk, 'и «не помещается» здесь неоткуда взяться');
+});
+
+test('scheduler: части не срастаются, если одна уже сделана', () => {
+  const task = flex({ id: 'f', durationMinMinutes: 90, durationMaxMinutes: 90, importance: 3 });
+  task.chunks = [
+    { id: 'c1', start: new Date(2026, 6, 25, 9, 0).toISOString(), durationMinutes: 45, locked: true, status: STATUS.DONE },
+    { id: 'c2', start: new Date(2026, 6, 25, 9, 45).toISOString(), durationMinutes: 45, locked: true, status: STATUS.SCHEDULED },
+  ];
+  schedule([task], cfg, NOW);
+  eq(task.chunks.length, 2, 'прожитое время нельзя склеить с планом');
 });
 
 test('scheduler: прошедший фрагмент не переносится сращиванием', () => {

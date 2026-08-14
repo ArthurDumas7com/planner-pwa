@@ -77,6 +77,7 @@ export function makeTask(p = {}) {
     allDay: p.allDay || false,     // занимает день целиком
 
     // вывод планировщика: [{id,start(ISO),durationMinutes,locked,status}]
+    // status у куска — своя отметка «сделано» (дробная задача закрывается по частям)
     chunks: p.chunks || [],
 
     // сколько раз дело уже переносили (для маркера «переносилось»)
@@ -95,4 +96,36 @@ export function targetDuration(task) {
 
 export function minDuration(task) {
   return task.durationMinMinutes ?? task.durationMaxMinutes ?? 0;
+}
+
+/**
+ * Кусок отмечен сделанным. Задачу, разбитую алгоритмом на части, закрывают
+ * по частям: галочка на одном фрагменте не трогает остальные (D.27).
+ */
+export function isChunkDone(chunk) {
+  return !!chunk && chunk.status === STATUS.DONE;
+}
+
+/** Сколько минут задачи уже прожито — сумма отмеченных частей. */
+export function doneMinutes(task) {
+  return (task.chunks || []).reduce((s, c) => s + (isChunkDone(c) ? c.durationMinutes : 0), 0);
+}
+
+/**
+ * Ручное изменение длины куска меняет и длительность самой задачи (D.7).
+ * Руками задают, сколько дело длится, а не «сколько от него влезло сюда»: иначе
+ * разница повисала бы неразмещённым хвостом, и укороченное дело тут же помечалось
+ * «не помещается» — там, где до укорачивания всё было в порядке.
+ * Двигаем диапазон на ту же дельту: у дела с вилкой min…max она сохраняется.
+ */
+export function resizeChunk(task, chunk, minutes) {
+  const next = Math.max(1, Math.round(minutes));
+  const delta = next - chunk.durationMinutes;
+  chunk.durationMinutes = next;
+  if (!delta || task.type !== TYPE.FLEXIBLE) return task;
+  const base = targetDuration(task) || (next - delta);
+  const max = Math.max(1, base + delta);
+  task.durationMaxMinutes = max;
+  task.durationMinMinutes = Math.max(1, Math.min(max, (task.durationMinMinutes ?? base) + delta));
+  return task;
 }

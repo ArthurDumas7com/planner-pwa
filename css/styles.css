@@ -176,9 +176,14 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 .block.unplaced::before { content: "не размещено"; position: absolute; right: 3px; top: 2px;
   font-size: 9px; color: var(--risk); }
 
-/* выполненное дело — приглушённое серое */
+/* выполненное дело (или отдельная его часть) — приглушённое серое */
 .block.done { opacity: .4; }
 .block.done .btitle { text-decoration: line-through; }
+
+/* «2/3» — какая это часть раздробленной задачи: закрывается галочкой отдельно */
+.bpart { font-style: normal; margin-left: 4px; padding: 0 3px; border-radius: 4px;
+  background: rgba(19,23,34,.10); font-size: 8.5px; letter-spacing: 0; }
+.block.fixed .bpart { background: rgba(255,255,255,.28); }
 
 /* маркер «дело уже переносили» */
 .bmoved { position: absolute; bottom: 2px; left: 4px; font-size: 10px; line-height: 1; z-index: 6;
@@ -436,6 +441,11 @@ input.f-low, select.f-low { border-color: var(--low); box-shadow: 0 0 0 2px rgba
 .bp-detach:hover { background: #a9d0ff; }
 .bp-note { flex: 1 1 0; font-size: 10.5px; line-height: 1.25; color: rgba(255,255,255,.82); padding-left: 4px; }
 
+/* «часть 2 из 3» — шторка открыта по одному фрагменту дроблёной задачи */
+.bp-part { flex: 0 0 auto; border-radius: var(--bp-r); padding: 9px 10px;
+  background: rgba(255,255,255,.22); color: #fff;
+  font-size: 12px; font-weight: 600; line-height: 1; white-space: nowrap; }
+
 /* кнопка «повторение» в строке времени */
 .bp-rep { flex: 0 1 auto; min-width: 0; border: none; cursor: pointer; padding: 0 8px;
   background: rgba(255,255,255,.22); color: #fff; font-size: 11.5px; line-height: 1;
@@ -548,6 +558,11 @@ input.f-low, select.f-low { border-color: var(--low); box-shadow: 0 0 0 2px rgba
 .tc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .tc-title { font-size: 19px; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
 .tc-rep { margin-left: 6px; font-size: 13px; font-weight: 400; opacity: .7; }
+/* «2/3» — часть дроблёной задачи: у каждой части своя галочка */
+.tc-part { margin-left: 6px; padding: 2px 6px; border-radius: 999px;
+  background: rgba(19,23,34,.10); font-size: 12px; font-weight: 600;
+  vertical-align: middle; text-decoration: none; display: inline-block; }
+.tcard.fixed .tc-part { background: rgba(255,255,255,.22); }
 .tc-acts { display: flex; gap: 6px; flex: none; }
 .tc-btn { width: 34px; height: 34px; border-radius: 50%; border: none; cursor: pointer;
   background: rgba(255,255,255,.78); color: inherit; font-size: 15px; line-height: 1; }

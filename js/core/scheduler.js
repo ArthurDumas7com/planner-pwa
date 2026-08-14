@@ -1,6 +1,6 @@
 // Ядро планировщика (ТЗ v2, раздел D). Детерминированно от (items, config, now).
 import {
-  TYPE, NATURE, STATUS, DEFAULT_CONFIG, newId, targetDuration, minDuration,
+  TYPE, NATURE, STATUS, DEFAULT_CONFIG, newId, targetDuration, minDuration, isChunkDone,
 } from './model.js';
 import { computeFreeSlots, dayWindow } from './freeSlots.js';
 import {
@@ -68,6 +68,8 @@ export function schedule(items, config = DEFAULT_CONFIG, now = new Date()) {
  * «сделано» перетряхивала весь план, который пользователь уже видел и принял.
  * Чтобы алгоритм переставил задачу, её куски нужно удалить (кнопка «пересчитать план»,
  * смена дедлайна, открепление) — освободившееся место он разберёт сам.
+ * Отмеченные сделанными части не двигаются и не переставляются никогда: это уже
+ * прожитое время, а не план (D.27).
  */
 function keepValidChunks(items, config, now, horizonEnd) {
   const busy = [];
@@ -78,18 +80,20 @@ function keepValidChunks(items, config, now, horizonEnd) {
     }
   }
 
-  // разбираем закреплённые вручную, затем по времени: кто стоял раньше, тот и остаётся
+  // разбираем неподвижные (сделанные и закреплённые вручную), затем по времени:
+  // кто стоял раньше, тот и остаётся
+  const fixedChunk = (c) => (c.locked || isChunkDone(c) ? 1 : 0);
   const cand = [];
   for (const t of items) {
     if (t.type !== TYPE.FLEXIBLE || t.status === STATUS.DONE) continue;
     for (const c of (t.chunks || [])) cand.push({ t, c, start: new Date(c.start).valueOf() });
   }
-  cand.sort((a, b) => (b.c.locked ? 1 : 0) - (a.c.locked ? 1 : 0) || a.start - b.start);
+  cand.sort((a, b) => fixedChunk(b.c) - fixedChunk(a.c) || a.start - b.start);
 
   const keep = new Map();
   for (const { t, c, start } of cand) {
     const end = start + c.durationMinutes * 60000;
-    if (!c.locked && !chunkStillFits(t, start, end, busy, config, now)) continue;
+    if (!fixedChunk(c) && !chunkStillFits(t, start, end, busy, config, now)) continue;
     busy.push([start, end]);
     keep.set(t.id, [...(keep.get(t.id) || []), c]);
   }
@@ -333,6 +337,9 @@ export function defragment(items, config, now, horizonEnd) {
   for (const t of items) {
     if (t.type !== TYPE.FLEXIBLE || t.status === STATUS.DONE) continue;
     if ((t.chunks || []).length < 2) continue;
+    // задачу, у которой часть уже отмечена сделанной, не пересобираем: прожитое
+    // время нельзя ни склеить с планом, ни увезти на другое место (D.27)
+    if ((t.chunks || []).some(isChunkDone)) continue;
     mergeTouching(t);
     if (t.chunks.length < 2) continue;
 
